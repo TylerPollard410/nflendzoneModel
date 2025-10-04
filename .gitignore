@@ -53,10 +53,10 @@ rsconnect/
 .DS_Store
 
 # Stan model compilation artifacts
-inst/stan/**
-!inst/stan/**/*.*
-inst/stan/**/*.exe
-inst/stan/**/*.EXE
+src/stan/**
+!src/stan/**/*.*
+src/stan/**/*.exe
+src/stan/**/*.EXE
 *.dll
 *.stan.json
 *.hpp
@@ -68,3 +68,5 @@ README_cache/
 README.html
 
 **/*.quarto_ipynb
+/doc/
+/Meta/

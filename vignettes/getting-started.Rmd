@@ -1,6 +1,6 @@
 ---
 title: "Getting Started with nflendzoneModel"
-output: rmarkdown::html_vignette
+output: html_vignette
 vignette: >
   %\VignetteIndexEntry{Getting Started with nflendzoneModel}
   %\VignetteEngine{knitr::rmarkdown}

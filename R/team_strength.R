@@ -1,35 +1,3 @@
-#' @title Get the team strength fit model
-#' @export
-#' @family models
-#' @description Access the pre-compiled team strength fit Stan model.
-#' @return A CmdStanModel object for the team strength fit model.
-#' @examples
-#' if (instantiate::stan_cmdstan_exists()) {
-#'   mod <- get_team_strength_fit_model()
-#' }
-get_team_strength_fit_model <- function() {
-  instantiate::stan_package_model(
-    name = "team_strength_fit",
-    package = "nflendzoneModel"
-  )
-}
-
-#' @title Get the team strength generated quantities model
-#' @export
-#' @family models
-#' @description Access the pre-compiled team strength GQ Stan model for predictions.
-#' @return A CmdStanModel object for the team strength GQ model.
-#' @examples
-#' if (instantiate::stan_cmdstan_exists()) {
-#'   mod <- get_team_strength_gq_model()
-#' }
-get_team_strength_gq_model <- function() {
-  instantiate::stan_package_model(
-    name = "team_strength_gq",
-    package = "nflendzoneModel"
-  )
-}
-
 #' @title Fit the NFL team strength model
 #' @export
 #' @family models
@@ -52,7 +20,10 @@ get_team_strength_gq_model <- function() {
 #' }
 fit_team_strength_model <- function(stan_data, ...) {
   stopifnot(is.list(stan_data))
-  model <- get_team_strength_fit_model()
+  model <- instantiate::stan_package_model(
+    name = "team_strength_fit",
+    package = "nflendzoneModel"
+  )
   fit <- model$sample(data = stan_data, ...)
   fit
 }
@@ -78,7 +49,10 @@ fit_team_strength_model <- function(stan_data, ...) {
 generate_team_predictions <- function(fit, gq_data, ...) {
   stopifnot(inherits(fit, "CmdStanMCMC"))
   stopifnot(is.list(gq_data))
-  model <- get_team_strength_gq_model()
+  model <- instantiate::stan_package_model(
+    name = "team_strength_gq",
+    package = "nflendzoneModel"
+  )
   gq <- model$generate_quantities(fitted_params = fit, data = gq_data, ...)
   gq
 }

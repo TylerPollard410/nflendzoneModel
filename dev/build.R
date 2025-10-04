@@ -1,31 +1,24 @@
 # Build and Install Package
-# Based on instantiate development workflow
+# Standard R package development workflow with instantiate
 
-# Step 1: Build vignettes (if they exist)
-if (
-  dir.exists("vignettes") &&
-    length(list.files("vignettes", pattern = "\\.Rmd$")) > 0
-) {
-  message("Building vignettes...")
-  devtools::build_vignettes()
-}
-
-# Step 2: Configure Stan models for package compilation
+# Step 1: Configure Stan models (generates Makevars, cleanup scripts, etc.)
 message("Configuring Stan package...")
 instantiate::stan_package_configure()
 
-# Step 3: Generate documentation
-message("Generating documentation...")
-roxygen2::roxygenize()
+# Step 2: Document package (generates NAMESPACE and .Rd files from roxygen)
+message("Documenting package...")
+devtools::document()
 
-# Step 4: Install package (compiles Stan models)
-# Note: Do NOT use pkgload::load_all() - install the standard way
+# Step 3: Build vignettes
+message("Building vignettes...")
+devtools::build_vignettes()
+
+# Step 4: Check package (optional but recommended before install)
+message("Checking package...")
+devtools::check()
+
+# Step 5: Install package (compiles Stan models during installation)
 message("Installing package...")
-install.packages(".", repos = NULL, type = "source")
+devtools::install()
 
-# Step 5: Verify models are accessible
-message("Verifying models...")
-library(nflendzoneModel)
-fit_mod <- get_team_strength_fit_model()
-gq_mod <- get_team_strength_gq_model()
-message("✓ Package built and models loaded successfully")
+message("✓ Build complete!")

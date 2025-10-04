@@ -7,4 +7,4 @@
 #' @importFrom dplyr filter mutate select arrange group_by summarise bind_rows left_join
 #' @importFrom tibble tibble
 #' @importFrom tidyr fill
-NULL
+"_PACKAGE"
