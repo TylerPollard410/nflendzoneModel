@@ -12,12 +12,12 @@ Depends:
   R (>= 4.2.0)
 Imports:
   instantiate,
-  cmdstanr,
-  posterior,
   dplyr,
   tibble,
   tidyr
 Suggests:
+  cmdstanr,
+  posterior,
   tidybayes,
   bayesplot,
   knitr,

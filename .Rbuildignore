@@ -8,4 +8,5 @@
 ^doc$
 ^Meta$
 ^\.github$
-^\.DS_Store
+^\.DS_Store$
+^NOTICE$
