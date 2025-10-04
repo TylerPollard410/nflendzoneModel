@@ -66,20 +66,30 @@ cmdstanr::install_cmdstan()
 ### Install Package
 
 ``` r
-# Install from local source (compiles Stan models)
+# Install from local source (compiles Stan models during installation)
+devtools::install()
+
+# Or using standard R CMD INSTALL
 install.packages(".", repos = NULL, type = "source")
 ```
 
-The Stan models will compile automatically during installation.
+The Stan models will compile automatically during installation. This may
+take several minutes.
 
 ## Usage
 
 ``` r
 library(nflendzoneModel)
 
-# Access pre-compiled models
-fit_mod <- get_team_strength_fit_model()
-gq_mod <- get_team_strength_gq_model()
+# Access pre-compiled models via instantiate
+fit_mod <- instantiate::stan_package_model(
+  name = "team_strength_fit",
+  package = "nflendzoneModel"
+)
+gq_mod <- instantiate::stan_package_model(
+  name = "team_strength_gq",
+  package = "nflendzoneModel"
+)
 
 # Fit the model (requires prepared Stan data)
 fit <- fit_team_strength_model(
@@ -98,7 +108,7 @@ predictions <- generate_team_predictions(
 )
 ```
 
-See vignettes for detailed examples.
+See `vignette("getting-started")` for detailed examples.
 
 ## Model Details
 
@@ -152,7 +162,7 @@ See [`dev/README.md`](dev/README.md) for details.
 
 ## License
 
-MIT + file LICENSE
+GPL (\>= 3)
 
 ## Author
 

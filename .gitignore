@@ -70,3 +70,5 @@ README.html
 **/*.quarto_ipynb
 /doc/
 /Meta/
+
+/.quarto/

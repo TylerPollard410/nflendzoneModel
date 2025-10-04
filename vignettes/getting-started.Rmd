@@ -40,17 +40,21 @@ library(posterior)
 
 ## Accessing Models
 
-The package provides two pre-compiled Stan models:
+The package exposes pre-compiled CmdStan executables. Retrieve them with `instantiate::stan_package_model()` when you need direct access:
 
 ```{r eval = FALSE}
-# Get the fit model
-fit_mod <- get_team_strength_fit_model()
+fit_mod <- instantiate::stan_package_model(
+  name = "team_strength_fit",
+  package = "nflendzoneModel"
+)
 
-# Get the generated quantities model
-gq_mod <- get_team_strength_gq_model()
+gq_mod <- instantiate::stan_package_model(
+  name = "team_strength_gq",
+  package = "nflendzoneModel"
+)
 ```
 
-These models are already compiled and ready to use.
+These objects point to the compiled binaries and can be reused across sessions once CmdStan has been configured.
 
 ## Model Structure
 
@@ -69,28 +73,31 @@ The GQ model takes a fitted model and generates predictions for out-of-sample ga
 ## Basic Workflow
 
 ```{r eval = FALSE}
-# 1. Prepare your data (you need to create these helpers)
-# fit_data <- create_stan_data(...)
+# 1. Prepare Stan-ready data (see the repository's inst/examples scripts for reference)
+# fit_data <- build_team_strength_data(...)
 
-# 2. Fit the model
-# fit <- fit_team_strength_model(
-#   stan_data = fit_data,
-#   chains = 4,
-#   parallel_chains = 4,
-#   iter_warmup = 1000,
-#   iter_sampling = 2000
-# )
+# 2. Fit the model using the packaged helper
+fit <- fit_team_strength_model(
+  stan_data = fit_data,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 2000
+)
 
-# 3. Generate predictions
-# gq_data <- prepare_gq_data(...)
-# predictions <- generate_team_predictions(
-#   fit = fit,
-#   gq_data = gq_data
-# )
+# 3. Assemble generated-quantities input for the games you want to score
+# gq_data <- build_gq_data(fit_data, future_schedule, ...)
 
-# 4. Extract results
-# draws <- predictions$draws()
-# summary <- predictions$summary()
+# 4. Generate predictions from the fitted draws
+predictions <- generate_team_predictions(
+  fit = fit,
+  gq_data = gq_data,
+  parallel_chains = 4
+)
+
+# 5. Work with posterior draws or summaries
+draws <- predictions$draws()
+posterior::summarise_draws(draws, c("mean", "sd"))
 ```
 
 ## Next Steps
