@@ -23,7 +23,7 @@ Suggests:
   knitr,
   rmarkdown
 Additional_repositories:
-  https://mc-stan.org/r-packages/
+  https://stan-dev.r-universe.dev
 SystemRequirements: CmdStan (https://mc-stan.org/users/interfaces/cmdstan)
 Encoding: UTF-8
 LazyData: true
