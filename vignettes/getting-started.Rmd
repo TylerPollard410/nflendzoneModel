@@ -1,0 +1,100 @@
+---
+title: "Getting Started with nflendzoneModel"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with nflendzoneModel}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Introduction
+
+`nflendzoneModel` provides pre-compiled CmdStan models for Bayesian analysis of NFL game data. This vignette demonstrates the basic workflow.
+
+## Prerequisites
+
+Before using this package, ensure CmdStan is installed:
+
+```{r eval = FALSE}
+# Check if CmdStan exists
+instantiate::stan_cmdstan_exists()
+
+# If not, install it
+cmdstanr::install_cmdstan()
+```
+
+## Loading the Package
+
+```{r setup, eval = FALSE}
+library(nflendzoneModel)
+library(cmdstanr)
+library(posterior)
+```
+
+## Accessing Models
+
+The package provides two pre-compiled Stan models:
+
+```{r eval = FALSE}
+# Get the fit model
+fit_mod <- get_team_strength_fit_model()
+
+# Get the generated quantities model
+gq_mod <- get_team_strength_gq_model()
+```
+
+These models are already compiled and ready to use.
+
+## Model Structure
+
+### Fit Model
+
+The team strength fit model is a hierarchical state-space model with:
+
+- **Team strengths**: AR(1) process across weeks
+- **Home field advantage**: League-level + team-specific components
+- **Seasonal transitions**: Carryover effects between seasons
+
+### Generated Quantities Model
+
+The GQ model takes a fitted model and generates predictions for out-of-sample games.
+
+## Basic Workflow
+
+```{r eval = FALSE}
+# 1. Prepare your data (you need to create these helpers)
+# fit_data <- create_stan_data(...)
+
+# 2. Fit the model
+# fit <- fit_team_strength_model(
+#   stan_data = fit_data,
+#   chains = 4,
+#   parallel_chains = 4,
+#   iter_warmup = 1000,
+#   iter_sampling = 2000
+# )
+
+# 3. Generate predictions
+# gq_data <- prepare_gq_data(...)
+# predictions <- generate_team_predictions(
+#   fit = fit,
+#   gq_data = gq_data
+# )
+
+# 4. Extract results
+# draws <- predictions$draws()
+# summary <- predictions$summary()
+```
+
+## Next Steps
+
+- See the model specifications in `src/stan/`
+- Develop data preparation helpers for your NFL data
+- Extend with custom analysis functions

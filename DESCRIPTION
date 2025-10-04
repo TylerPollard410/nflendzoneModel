@@ -1,0 +1,32 @@
+Package: nflendzoneModel
+Type: Package
+Title: NFL Bayesian Modeling with Pre-compiled Stan Models
+Version: 0.1.0
+Author@R: c(person("Tyler", "Pollard", email = "tylerpollard410@gmail.com",
+                   role = c("aut", "cre"))
+Description: NFL Bayesian state-space models for team strength estimation and
+  game prediction. Includes pre-compiled CmdStan models for efficient fitting
+  and forecasting with helper functions for data preparation and sequential
+  backtesting.
+Depends:
+  R (>= 4.2.0)
+Imports:
+  instantiate,
+  cmdstanr,
+  posterior,
+  dplyr,
+  tibble,
+  tidyr
+Suggests:
+  tidybayes,
+  bayesplot,
+  knitr,
+  rmarkdown
+Additional_repositories:
+  https://mc-stan.org/r-packages/
+SystemRequirements: CmdStan (https://mc-stan.org/users/interfaces/cmdstan)
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.2.3
+VignetteBuilder: knitr
+License: GPL (>= 3)
