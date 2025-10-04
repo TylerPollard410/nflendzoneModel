@@ -7,6 +7,5 @@
 ^\.gitignore$
 ^doc$
 ^Meta$
-^inst$
 ^\.github$
 ^\.DS_Store
