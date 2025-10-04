@@ -2,7 +2,10 @@
 # Based on instantiate development workflow
 
 # Step 1: Build vignettes (if they exist)
-if (dir.exists("vignettes") && length(list.files("vignettes", pattern = "\\.Rmd$")) > 0) {
+if (
+  dir.exists("vignettes") &&
+    length(list.files("vignettes", pattern = "\\.Rmd$")) > 0
+) {
   message("Building vignettes...")
   devtools::build_vignettes()
 }

@@ -65,5 +65,6 @@ inst/stan/**/*.EXE
 
 # R Markdown
 README_cache/
+README.html
 
 **/*.quarto_ipynb

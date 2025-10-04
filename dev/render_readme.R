@@ -6,7 +6,12 @@ if (!requireNamespace("rmarkdown", quietly = TRUE)) {
 }
 
 message("Rendering README.Rmd to README.md...")
-rmarkdown::render("README.Rmd", output_format = "github_document")
+rmarkdown::render(
+  "README.Rmd",
+  output_format = "github_document",
+  output_file = "README.md",
+  quiet = TRUE
+)
 
 message("✓ README.md generated from README.Rmd")
 message("\nNext: Commit both README.Rmd and README.md")
