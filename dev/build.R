@@ -9,6 +9,8 @@ instantiate::stan_package_configure()
 message("Documenting package...")
 devtools::document()
 
+attachment::att_amend_desc()
+
 # Step 3: Build vignettes
 message("Building vignettes...")
 devtools::build_vignettes()

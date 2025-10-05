@@ -1,35 +1,38 @@
-Package: nflendzoneModel
 Type: Package
+Package: nflendzoneModel
 Title: NFL Bayesian Modeling with Pre-compiled Stan Models
 Version: 0.1.0
-Authors@R: c(person("Tyler", "Pollard", email = "tylerpollard410@gmail.com",
-                   role = c("aut", "cre")))
-Description: NFL Bayesian state-space models for team strength estimation and
-  game prediction. Includes pre-compiled CmdStan models for efficient fitting
-  and forecasting with helper functions for data preparation and sequential
-  backtesting.
+Authors@R: 
+    person("Tyler", "Pollard", , "tylerpollard410@gmail.com", role = c("aut", "cre"))
+Description: NFL Bayesian state-space models for team strength estimation
+    and game prediction. Includes pre-compiled CmdStan models for
+    efficient fitting and forecasting with helper functions for data
+    preparation and sequential backtesting.
+License: GPL (>= 3)
 Depends:
-  R (>= 4.2.0)
+    R (>= 4.2.0)
 Imports:
-  instantiate,
-  dplyr,
-  tibble,
-  tidyr,
-  posterior,
-  tidybayes,
-  stats,
-  utils
+    cmdstanr,
+    dplyr,
+    instantiate,
+    piggyback,
+    posterior,
+    purrr,
+    stats,
+    tibble,
+    tidybayes,
+    tidyr,
+    utils
 Suggests:
-  cmdstanr,
-  bayesplot,
-  ggplot2,
-  knitr,
-  rmarkdown
-Additional_repositories:
-  https://stan-dev.r-universe.dev
-SystemRequirements: CmdStan (https://mc-stan.org/users/interfaces/cmdstan)
+    ggplot2,
+    knitr,
+    nflverse,
+    rmarkdown
+VignetteBuilder: 
+    knitr
+Additional_repositories:https://stan-dev.r-universe.dev,
+    https://nflverse.r-universe.dev
 Encoding: UTF-8
 LazyData: true
 RoxygenNote: 7.3.3
-VignetteBuilder: knitr
-License: GPL (>= 3)
+SystemRequirements: CmdStan (https://mc-stan.org/users/interfaces/cmdstan)

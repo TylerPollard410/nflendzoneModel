@@ -9,24 +9,39 @@
 # - Package installed: devtools::install() or install_github()
 # - Required data packages: nflendzone (or nflreadr for testing)
 
+library(arrow)
+library(lubridate)
+library(piggyback)
+library(purrr)
+library(dplyr)
+
+library(plotly)
+library(bayesplot)
 library(posterior)
 library(tidybayes)
-library(tidyverse)
 
-library(nflverse)
+library(nflplotR)
+library(nflreadr)
+library(nflfastR)
+library(nflseedR)
+
 library(nflendzoneModel)
 library(nflendzonePipeline)
 library(nflendzone)
 
-# Replace these with your actual data loading functions from nflendzone package
-# library(nflendzone)
-# library(nflendzoneData)
-
 set.seed(52)
 
 # ============================================================================ #
-# 0. Load Data
+# 0. Load Data ----
 # ============================================================================ #
+
+# Global variables
+github_data_repo <- "TylerPollard410/nflendzoneData"
+github_releases_base_url <- paste0(
+  "https://github.com/",
+  github_data_repo,
+  "/releases/download/"
+)
 
 # Get teams and seasons
 # Replace with: teams <- nflendzone::load_teams(current = TRUE)$team_abbr
@@ -57,7 +72,7 @@ game_data_full <- nflendzone::load_game_data(seasons = all_seasons)
 # )
 
 # ============================================================================ #
-# 1. Prepare Data for Fitting
+# 1. Prepare Data for Fitting ----
 # ============================================================================ #
 
 # Prepare full schedule with indices (needed for GQ)
@@ -85,7 +100,7 @@ fit_stan_data <- roll_forward_fit_stan_data(
 )
 
 # ============================================================================ #
-# 2. Prepare GQ Data for Predictions
+# 2. Prepare GQ Data for Predictions ----
 # ============================================================================ #
 
 # Get targets for next week
@@ -99,7 +114,7 @@ gq_stan_data <- prepare_gq_data(
 )
 
 # ============================================================================ #
-# 3. Fit Model
+# 3. Fit Model ----
 # ============================================================================ #
 
 # Globals
@@ -111,7 +126,7 @@ fit_parallel = min(fit_chains, parallel::detectCores() - 1)
 fit_warm = 1000
 fit_samps = 1000
 fit_thin = 1
-fit_adapt_delta = 0.90
+fit_adapt_delta = 0.95
 fit_max_treedepth = 10
 
 cat("\n=== Fitting Model ===\n")
@@ -134,7 +149,7 @@ fit <- fit_team_strength_model(
 # fit$save_object(file = sprintf("current_fit_%d.rds", gq_targets))
 
 # ============================================================================ #
-# 4. Generate Predictions
+# 4. Generate Predictions ----
 # ============================================================================ #
 
 cat("\n=== Generating Predictions ===\n")
@@ -148,7 +163,7 @@ gq <- predict_team_strength(
 )
 
 # ============================================================================ #
-# 5. Extract Predictions
+# 5. Extract Prediction Data ----
 # ============================================================================ #
 
 # Get OOS games
@@ -161,24 +176,166 @@ predictions <- extract_game_predictions(
   schedule_df = oos_games
 )
 
+# ID variables
+filter_week_idx <- fit_stan_data$N_weeks
+filter_season <- sort(unique(schedule_idx$season))[fit_stan_data$N_seasons]
+filter_week <- schedule_idx |>
+  filter(week_idx == filter_week_idx) |>
+  pull(week) |>
+  unique()
+
+predict_week_idx <- gq_targets[1]
+predict_season <- sort(unique(
+  schedule_idx$season
+))[gq_stan_data$future_week_to_season[1]]
+predict_week <- schedule_idx |>
+  filter(week_idx == predict_week_idx) |>
+  pull(week) |>
+  unique()
+
 # ============================================================================ #
-# 6. Build Prediction DataFrame (like original current_week_fit.R)
+# 6. Extract Team Strengths ----
 # ============================================================================ #
 
+## Draws ----
 # Extract team strengths with rvars
+fit_metadata <- fit$metadata()
+fit_draws <- fit$draws()
+fit_rvars <- as_draws_rvars(fit_draws)
+
+gq_metadata <- gq$metadata()
 gq_draws <- gq$draws()
 gq_rvars <- as_draws_rvars(gq_draws)
 
-gq_strengths <- gq_rvars |>
+## Filtered ----
+### Strength ----
+filtered_strengths <- gq_rvars |>
+  spread_rvars(
+    filtered_team_strength[team],
+    filtered_team_hfa[team]
+  ) |>
+  mutate(
+    week_idx = fit_stan_data$N_weeks,
+    team = teams[team]
+  ) |>
+  left_join(
+    schedule_idx |>
+      select(season_idx, week_idx, season, week) |>
+      distinct(),
+    by = "week_idx"
+  ) |>
+  relocate(season_idx, week_idx, season, week, .before = 1)
+
+### League HFA ----
+filtered_league_hfa <- gq_rvars |>
+  spread_rvars(
+    filtered_league_hfa
+  ) |>
+  mutate(
+    week_idx = fit_stan_data$N_weeks
+  ) |>
+  left_join(
+    schedule_idx |>
+      select(season_idx, week_idx, season, week) |>
+      distinct(),
+    by = "week_idx"
+  ) |>
+  relocate(season_idx, week_idx, season, week, .before = 1)
+
+### Results ----
+filtered_result <- schedule_idx |>
+  filter(week_idx == fit_stan_data$N_weeks) |>
+  select(
+    game_idx,
+    game_id,
+    season_idx,
+    week_idx,
+    season,
+    week,
+    hfa,
+    home_team,
+    away_team
+  ) |>
+  left_join(
+    fit_rvars |>
+      spread_rvars(
+        mu[game_idx],
+        sigma_obs
+      ),
+    by = "game_idx"
+  ) |>
+  mutate(
+    y_obs = rvar_rng(rnorm, 1, mu, sigma_obs),
+    .by = game_id
+  )
+
+## Predicted ----
+### Strength ----
+predicted_strengths <- gq_rvars |>
   spread_rvars(
     predicted_team_strength[week_idx, team],
-    predicted_team_hfa[week_idx, team],
-    sigma_pred
+    predicted_team_hfa[week_idx, team]
   ) |>
   mutate(
     week_idx = gq_targets[week_idx],
     team = teams[team]
   )
+
+### League HFA ----
+predicted_league_hfa <- gq_rvars |>
+  spread_rvars(
+    predicted_league_hfa
+  ) |>
+  mutate(
+    season_idx = gq_stan_data$future_week_to_season[1],
+    week_idx = gq_targets[1]
+  ) |>
+  left_join(
+    schedule_idx |>
+      select(season_idx, week_idx, season, week) |>
+      distinct(),
+    by = c("season_idx", "week_idx")
+  ) |>
+  relocate(season_idx, week_idx, season, week, .before = 1)
+
+### Results ----
+if (nrow(oos_games) == 0) {
+  stop("No out-of-sample games to predict.")
+} else {
+  predicted_result <- schedule_idx |>
+    filter(week_idx == gq_targets) |>
+    select(
+      game_idx,
+      game_id,
+      season_idx,
+      week_idx,
+      season,
+      week,
+      hfa,
+      home_team,
+      away_team
+    ) |>
+    left_join(
+      gq_rvars |>
+        spread_rvars(
+          mu_pred[game_idx],
+          sigma_pred,
+          y_pred[game_idx]
+        ) |>
+        mutate(
+          game_idx = oos_games$game_idx[game_idx]
+        ),
+      by = "game_idx"
+    )
+  # mutate(
+  #   y_pred_calc = rvar_rng(rnorm, 1, mu_pred, sigma_pred),
+  #   .by = game_id
+  # )
+}
+
+# ============================================================================ #
+# 7. Build Prediction DataFrame ----
+# ============================================================================ #
 
 # Build full prediction dataframe
 pred_df <- oos_games |>
@@ -258,3 +415,7 @@ print(pred_df, n = 20)
 # saveRDS(pred_df, sprintf("predictions_week_%d.rds", current_week))
 
 cat("\n=== Complete ===\n")
+
+# ============================================================================ #
+# 9. Data Viz ----
+# ============================================================================ #

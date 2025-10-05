@@ -134,10 +134,11 @@ prepare_stan_data <- function(game_data, teams, verbose = FALSE) {
 #' )
 #' }
 prepare_gq_data <- function(
-    fit_stan_data,
-    schedule_df,
-    target_weeks = NULL,
-    horizon = 1L) {
+  fit_stan_data,
+  schedule_df,
+  target_weeks = NULL,
+  horizon = 1L
+) {
   # Determine target weeks
   if (is.null(target_weeks)) {
     target_weeks <- next_week_targets(fit_stan_data, horizon = horizon)

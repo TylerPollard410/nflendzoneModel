@@ -116,7 +116,7 @@ predict_team_strength <- function(draws, gq_data, ...) {
       loaded_draws <- readRDS(draws)
       gq <- gq_model$generate_quantities(fitted_params = loaded_draws, data = gq_data, ...)
     } else if (grepl("\\.csv$", draws)) {
-      loaded_draws <- posterior::read_cmdstan_csv(draws)
+      loaded_draws <- cmdstanr::read_cmdstan_csv(draws)
       gq <- gq_model$generate_quantities(fitted_params = loaded_draws, data = gq_data, ...)
     } else {
       stop("File must be .rds or .csv format")
