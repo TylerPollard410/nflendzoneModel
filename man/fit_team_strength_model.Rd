@@ -33,6 +33,7 @@ Fit the NFL team strength state-space Stan model.
 }
 \seealso{
 Other models: 
-\code{\link{generate_team_predictions}()}
+\code{\link{generate_team_predictions}()},
+\code{\link{predict_team_strength}()}
 }
 \concept{models}

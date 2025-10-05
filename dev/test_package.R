@@ -2,6 +2,8 @@
 # Run this after installing the package to verify everything works
 
 # Load package
+devtools::install_github("TylerPollard410/nflendzoneModel")
+#install.packages(pkgs = "package_folder", type = "source", repos = NULL)
 library(nflendzoneModel)
 
 message("=== Testing nflendzoneModel Package ===\n")
@@ -71,7 +73,13 @@ if (nrow(vigs) > 0) {
 
 # Test 7: Check documentation
 message("\n--- Checking Documentation ---")
-if (file.exists(system.file("help", "nflendzoneModel.rdb", package = "nflendzoneModel"))) {
+if (
+  file.exists(system.file(
+    "help",
+    "nflendzoneModel.rdb",
+    package = "nflendzoneModel"
+  ))
+) {
   message("✓ Help documentation is available")
   message("  Try: ?fit_team_strength_model")
   message("  Try: ?generate_team_predictions")
@@ -89,4 +97,6 @@ message("  1. Prepare your NFL game data")
 message("  2. Create Stan data list (see vignette)")
 message("  3. Run fit_team_strength_model()")
 message("  4. Generate predictions with generate_team_predictions()")
-message("\nFor examples, run: vignette('getting-started', package = 'nflendzoneModel')")
+message(
+  "\nFor examples, run: vignette('getting-started', package = 'nflendzoneModel')"
+)

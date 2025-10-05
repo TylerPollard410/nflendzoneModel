@@ -32,6 +32,7 @@ Generate predictions using the team strength GQ model.
 }
 \seealso{
 Other models: 
-\code{\link{fit_team_strength_model}()}
+\code{\link{fit_team_strength_model}()},
+\code{\link{predict_team_strength}()}
 }
 \concept{models}

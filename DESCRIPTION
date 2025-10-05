@@ -14,12 +14,15 @@ Imports:
   instantiate,
   dplyr,
   tibble,
-  tidyr
-Suggests:
-  cmdstanr,
+  tidyr,
   posterior,
   tidybayes,
+  stats,
+  utils
+Suggests:
+  cmdstanr,
   bayesplot,
+  ggplot2,
   knitr,
   rmarkdown
 Additional_repositories:
