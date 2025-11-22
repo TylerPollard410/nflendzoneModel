@@ -3,6 +3,7 @@ library(tidyr)
 library(INLA)
 library(tictoc)
 library(posterior)
+library(tidybayes)
 library(tibble)
 library(stringr)
 
@@ -73,7 +74,8 @@ glimpse(games_inla)
 
 formula_inla <- y ~ 0 +
   # Team strength: RW1 over global weeks, replicated per team (home side)
-  f(idx_week_home, model = "rw1", replicate = team_home, constr = TRUE) +
+  # f(idx_week_home, model = "rw1", replicate = team_home, constr = TRUE) +
+  f(idx_week_home, model = "ar1", replicate = team_home, constr = TRUE) +
   # Team strength: same latent field, copied with scale -1 for away side
   f(idx_week_away, copy = "idx_week_home", fixed = FALSE, param = c(-1, 0)) +
   # League-wide HFA: AR1 over seasons
@@ -203,6 +205,13 @@ fit_inla <- inla(
   )
 )
 toc()
+
+fit_inla_sum <- summary(fit_inla, digits = 4)
+print(fit_inla_sum, digits = 4)
+
+# For reference, show stan model summary of similar variables
+fit_stan_meta <- fit$metadata()
+fit$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
 
 # ============================================================================ #
 # 5. Posterior sampling ----
@@ -916,4 +925,4 @@ predicted_league_compare
 filtered_strengths_compare
 predicted_strengths_compare
 filtered_result_compare
-t(predicted_result_compare)
+predicted_result_compare
