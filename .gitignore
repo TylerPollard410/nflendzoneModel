@@ -62,6 +62,7 @@ src/stan/**/*.EXE
 *.hpp
 *.o
 *.so
+artifacts/
 
 # R Markdown
 README_cache/
