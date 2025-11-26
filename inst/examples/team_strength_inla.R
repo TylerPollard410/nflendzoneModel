@@ -54,6 +54,7 @@ games_inla <- games_prep |>
     y = result,
     idx_week_home = week_idx,
     idx_week_away = week_idx,
+    season_jump_idx = ifelse(fw_season_idx == 1L & week_idx > 1L, season_idx, NA_integer_),
     season_idx_league_active = ifelse(hfa == 1L, season_idx, NA_integer_),
     team_season_home_active = ifelse(hfa == 1L, team_season_home, NA_integer_)
   )
@@ -75,24 +76,22 @@ formula_inla <- y ~ 0 +
     replicate = home_idx,
     constr = TRUE,
     hyper = list(
-      rho = list(prior = "betacorrelation", param = c(9, 1)),    # phi_weekly_team_strength_innovation
-      prec = list(prior = "pc.prec", param = c(1 / (0.8^2), 0.05)) # sigma_weekly ~ 0.8 median
+      rho = list(prior = "betacorrelation", param = c(9, 1)),       # phi_weekly_team_strength_innovation
+      prec = list(prior = "pc.prec", param = c(1 / (1.0^2), 0.05))  # sigma_weekly ~ 1.0 median
     )
   ) +
-  # Team-season carryover: AR1 across seasons, replicated per team. This
-  # approximates Stan's season-level innovation process.
+  # Season-to-season innovation: applied only on first-week games
   f(
-    season_idx,
-    model = "ar1",
+    season_jump_idx,
+    model = "iid",
     replicate = home_idx,
     constr = TRUE,
     hyper = list(
-      rho = list(prior = "betacorrelation", param = c(6, 4)),      # phi_season_team_strength_innovation
       prec = list(prior = "pc.prec", param = c(1 / (3.5^2), 0.05)) # sigma_season ~ 3.5 median
     )
   ) +
   # Team strength away side: copy of home latent field scaled -1
-  f(idx_week_away, copy = "idx_week_home", fixed = FALSE, param = c(-1, 0)) +
+  f(idx_week_away, copy = "idx_week_home", fixed = TRUE, param = c(-1, 0)) +
   # League-wide HFA: AR1 over seasons
   f(
     season_idx_league_active,
@@ -227,7 +226,7 @@ fit_inla <- inla(
     hyper = list(
       prec = list(
         prior = "pc.prec",
-        param = c(1 / (12.5^2), 0.05) # sigma_obs ~12.5 median, matching Stan posterior
+        param = c(1 / (12.5^2), 0.5) # P(sigma > 12.5) = 0.5, matching Stan scale
       )
     )
   ),
