@@ -3,7 +3,6 @@
 // - Non-centered innovations for better sampling
 // - Leverages provided global week_idx and season boundary indicators
 // - ENHANCEMENTS: Function for mu computation, complete predictions, log-likelihood
-
 functions {
   vector compute_mu(array[] int home_team, array[] int away_team,
                     array[] int week_idx, array[] int season_idx,
@@ -162,9 +161,8 @@ transformed parameters {
                            * sigma_weekly_team_strength_innovation;
     }
   }
-  
-  vector[N_games] mu = compute_mu(home_team, away_team, week_idx, season_idx,
-                                  hfa, team_strength, team_hfa, N_games);
+  // vector[N_games] mu = compute_mu(home_team, away_team, week_idx, season_idx,
+  //                                 hfa, team_strength, team_hfa, N_games);
 }
 model {
   // Priors (tuneable)
@@ -197,7 +195,12 @@ model {
   sigma_obs ~ student_t(3, 0, 10); // exponential(1); //gamma(2, 0.1); normal(0, 5);
   
   // Likelihood - using function for cleaner code
-  result ~ normal(mu, sigma_obs);
+  {
+    vector[N_games] mu = compute_mu(home_team, away_team, week_idx,
+                                    season_idx, hfa, team_strength, team_hfa,
+                                    N_games);
+    result ~ normal(mu, sigma_obs);
+  }
 }
 generated quantities {
   // Last observed global week and its season
@@ -258,14 +261,15 @@ generated quantities {
   
   // Log-likelihood for model comparison (LOO-CV, WAIC)
   vector[N_games] log_lik;
-  for (g in 1 : N_games) {
-    log_lik[g] = normal_lpdf(result[g] | mu[g], sigma_obs);
-  }
-  // {
-  //   vector[N_games] mu = compute_mu(home_team, away_team, week_idx, season_idx,
-  //                                   hfa, team_strength, team_hfa, N_games);
-  //   for (g in 1:N_games) {
-  //     log_lik[g] = normal_lpdf(result[g] | mu[g], sigma_obs);
-  //   }
+  // for (g in 1 : N_games) {
+  //   log_lik[g] = normal_lpdf(result[g] | mu[g], sigma_obs);
   // }
+  {
+    vector[N_games] mu = compute_mu(home_team, away_team, week_idx,
+                                    season_idx, hfa, team_strength, team_hfa,
+                                    N_games);
+    for (g in 1 : N_games) {
+      log_lik[g] = normal_lpdf(result[g] | mu[g], sigma_obs);
+    }
+  }
 }

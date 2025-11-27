@@ -54,61 +54,92 @@ games_inla <- games_prep |>
     y = result,
     idx_week_home = week_idx,
     idx_week_away = week_idx,
-    season_jump_idx = ifelse(fw_season_idx == 1L & week_idx > 1L, season_idx, NA_integer_),
+    season_start_idx = ifelse(
+      fw_season_idx == 1L & week_idx > 1L,
+      season_idx,
+      NA_integer_
+    ),
+    season_start_home_idx = season_start_idx,
+    season_start_away_idx = season_start_idx,
     season_idx_league_active = ifelse(hfa == 1L, season_idx, NA_integer_),
-    team_season_home_active = ifelse(hfa == 1L, team_season_home, NA_integer_)
+    team_season_home_active = ifelse(hfa == 1L, home_idx, NA_integer_),
+    team_season_hfa_repl = ifelse(hfa == 1L, season_idx, NA_integer_)
   )
 
 glimpse(games_inla)
 
 # ============================================================================ #
-# 2. INLA Model Formula (Gaussian result model with RW1 team strength) ----
+# 2. INLA Model Formula (Gaussian result model with AR1 team strength) ----
 # ============================================================================ #
-
+# Hyperpriors rely on the INLA parameterisations in the r-inla docs
+# (see https://www.r-inla.org/doc/latent/ar1 and pc.prec notes).
 formula_inla <- y ~ 0 +
   # Team strength: AR1 over global weeks, replicated per team (home side).
   # constr=TRUE enforces sum-to-zero per replicate to mirror Stan's
-  # sum_to_zero_vector. Hyperpriors use beta and pc.prec (see INLA doc
-  # section on latent models and hyperparameters).
+  # sum_to_zero_vector; betacorrelation matches phi_weekly_team_strength_innovation ~ Beta(9,1).
   f(
     idx_week_home,
     model = "ar1",
     replicate = home_idx,
+    values = seq_len(n_global_weeks), # keep all weeks across all replicates
     constr = TRUE,
     hyper = list(
-      rho = list(prior = "betacorrelation", param = c(9, 1)),       # phi_weekly_team_strength_innovation
-      prec = list(prior = "pc.prec", param = c(1 / (1.0^2), 0.05))  # sigma_weekly ~ 1.0 median
+      # pc.cor1 shrinks toward rho = 1 (positive persistence), matching Stan's
+      # phi_weekly_team_strength_innovation ~ Beta(9,1) concentrated near 1
+      # Param per r-inla: P(rho < 0.95) = 0.01 -> very strong pull to positive rho
+      rho = list(prior = "pc.cor1", param = c(0.95, 0.99)),
+      prec = list(prior = "pc.prec", param = c(2, 0.5)) # sigma_weekly_team_strength_innovation ~ t3(scale=2)
     )
   ) +
-  # Season-to-season innovation: applied only on first-week games
+  # Season-to-season carry-over innovation added on first weeks (Stan's
+  # sigma_season_team_strength_innovation). We treat it as IID per team per season-start,
+  # summed with the weekly AR1 field. replicate=team enforces sum-to-zero per team.
   f(
-    season_jump_idx,
+    season_start_home_idx,
     model = "iid",
     replicate = home_idx,
+    values = seq_len(n_seasons),
     constr = TRUE,
     hyper = list(
-      prec = list(prior = "pc.prec", param = c(1 / (3.5^2), 0.05)) # sigma_season ~ 3.5 median
+      prec = list(prior = "pc.prec", param = c(5, 0.5)) # sigma_season_team_strength_innovation ~ t3(scale=5)
     )
   ) +
   # Team strength away side: copy of home latent field scaled -1
-  f(idx_week_away, copy = "idx_week_home", fixed = TRUE, param = c(-1, 0)) +
-  # League-wide HFA: AR1 over seasons
+  f(
+    idx_week_away,
+    copy = "idx_week_home",
+    replicate = away_idx,
+    fixed = TRUE,
+    param = c(-1, 0)
+  ) +
+  # Season-start carry-over for away side (copy the same IID jumps, scale -1)
+  f(
+    season_start_away_idx,
+    copy = "season_start_home_idx",
+    fixed = TRUE,
+    param = c(-1, 0)
+  ) +
+  # League-wide HFA: AR1 over seasons (Stan: phi_league_hfa ~ Beta(8,2),
+  # sigma_league_hfa_innovation ~ t3(scale=2)); no sum-to-zero constraint.
   f(
     season_idx_league_active,
     model = "ar1",
-    constr = TRUE,
+    constr = FALSE,
     hyper = list(
       rho = list(prior = "betacorrelation", param = c(8, 2)),
-      prec = list(prior = "pc.prec", param = c(1 / (0.4^2), 0.05)) # sigma_league_hfa_innovation ~ 0.4 median
+      prec = list(prior = "pc.prec", param = c(2, 0.5))
     )
   ) +
-  # Team-season HFA deviations (home team), sum-to-zero across all teams each season
+  # Team-season HFA deviations (home team), sum-to-zero within season as in Stan's
+  # sum_to_zero_vector; replicate=season enforces separate constraints.
   f(
     team_season_home_active,
     model = "iid",
+    replicate = team_season_hfa_repl, # season-wise sum-to-zero
+    values = seq_len(n_teams),
     constr = TRUE,
     hyper = list(
-      prec = list(prior = "pc.prec", param = c(1 / (1.2^2), 0.05)) # sigma_team_hfa ~ 1.2 median
+      prec = list(prior = "pc.prec", param = c(2, 0.5)) # sigma_team_hfa ~ t3(scale=2)
     )
   )
 
@@ -150,46 +181,71 @@ formula_inla <- y ~ 0 +
 #   )
 
 # ============================================================================ #
-# 3. Fit on 2002-2024 and Predict 2025 Week 1 (GQ-style) ----
+# 3. Fit on all games before the target (season/week) and predict that target ----
 # ============================================================================ #
 
-s <- 2025
-w <- 1
+target_season <- 2025L
+target_week <- 3L
 
-message(
-  "Fitting INLA model for training up to season ",
-  s - 1,
-  " and predicting season ",
-  s,
-  " week ",
-  w
+# Find the global week_idx of the target; use it to include any earlier weeks
+# of the target season (e.g., 2025 W1-W2 when predicting W3).
+target_week_idx <- min(
+  games_inla$week_idx[
+    games_inla$season == target_season &
+      games_inla$week == target_week
+  ],
+  na.rm = TRUE
 )
+if (!is.finite(target_week_idx)) {
+  stop(
+    "No games found for season ",
+    target_season,
+    " week ",
+    target_week,
+    " in games_inla."
+  )
+}
 
-# Training data: all seasons < s (2002-2024)
+# Training data: all completed games strictly before the target global week
 train_data <- games_inla |>
   filter(
-    season < s | (season == s & week < w),
-    !is.na(y) # only completed games for fitting
+    !is.na(y),
+    week_idx < target_week_idx
   )
 
-# Last observed week in training (filtered state): should be 2024 W22
+if (nrow(train_data) == 0L) {
+  stop(
+    "No completed games found before season ",
+    target_season,
+    " week ",
+    target_week,
+    "."
+  )
+}
+
 last_train_week_idx <- max(train_data$week_idx)
+last_train_season_idx <- max(train_data$season_idx[
+  train_data$week_idx == last_train_week_idx
+])
 last_train_season <- max(train_data$season[
   train_data$week_idx == last_train_week_idx
 ])
 last_train_week <- max(train_data$week[
   train_data$week_idx == last_train_week_idx
 ])
-last_train_season_idx <- max(train_data$season_idx[
-  train_data$week_idx == last_train_week_idx
-])
 
-# Games we want to predict this iteration (season s, week w)
+# Games to predict: the target global week
 new_data <- games_inla |>
-  filter(season == s, week == w)
+  filter(week_idx == target_week_idx)
 
 if (nrow(new_data) == 0L) {
-  stop("No games found for season ", s, " week ", w, " in games_inla.")
+  stop(
+    "No games found for season ",
+    target_season,
+    " week ",
+    target_week,
+    " in games_inla."
+  )
 }
 
 # store actual result for later comparison, but set y=NA for prediction
@@ -201,22 +257,60 @@ new_data <- new_data |>
 
 pred_week_idx <- unique(new_data$week_idx)
 pred_season_idx <- unique(new_data$season_idx)
-pred_season <- unique(new_data$season)
-pred_week <- unique(new_data$week)
+pred_season <- target_season
+pred_week <- target_week
+
+if (length(pred_week_idx) != 1L) {
+  stop(
+    "Expected exactly one prediction week_idx (horizon = 1 like Stan), got: ",
+    paste(pred_week_idx, collapse = ", ")
+  )
+}
+if (length(pred_season_idx) != 1L) {
+  stop(
+    "Expected a single prediction season_idx, got: ",
+    paste(pred_season_idx, collapse = ", ")
+  )
+}
+pred_week_idx <- pred_week_idx[1]
+pred_season_idx <- pred_season_idx[1]
+target_week_idx <- pred_week_idx
+
+message(
+  "Fitting INLA model through season ",
+  last_train_season,
+  " week ",
+  last_train_week,
+  " (global week_idx ",
+  last_train_week_idx,
+  ") and predicting season ",
+  pred_season,
+  " week ",
+  pred_week,
+  " (global week_idx ",
+  target_week_idx,
+  ")."
+)
 
 # Combined data: training + prediction rows
 combined_data <- bind_rows(train_data, new_data)
 n_train <- nrow(train_data)
 n_total <- nrow(combined_data)
 
-# Indices of prediction rows (2025 W1)
+# Indices of prediction rows (next global week)
 pred_idx <- seq.int(n_train + 1L, n_total)
 
 # ============================================================================ #
 # 4. Single INLA fit with config=TRUE (enables posterior sampling) ----
 # ============================================================================ #
 
-tic("INLA fit (training + 2025W1 as NA)")
+tic(
+  sprintf(
+    "INLA fit (train through week_idx %d, predict week_idx %d)",
+    last_train_week_idx,
+    pred_week_idx
+  )
+)
 fit_inla <- inla(
   formula_inla,
   data = combined_data,
@@ -226,7 +320,7 @@ fit_inla <- inla(
     hyper = list(
       prec = list(
         prior = "pc.prec",
-        param = c(1 / (12.5^2), 0.5) # P(sigma > 12.5) = 0.5, matching Stan scale
+        param = c(10, 0.5) # P(sigma > 10) = 0.5 ~ Student-t(3,0,10) used in Stan
       )
     )
   ),
@@ -246,9 +340,13 @@ toc()
 fit_inla_sum <- summary(fit_inla)
 print(fit_inla_sum, digits = 4)
 
-# For reference, show stan model summary of similar variables
-fit_stan_meta <- fit$metadata()
-fit$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
+# For reference, show stan model summary of similar variables when available
+if (exists("fit")) {
+  fit_stan_meta <- fit$metadata()
+  fit$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
+} else {
+  warning("Stan fit object `fit` not found; skipping Stan summary print.")
+}
 
 # ============================================================================ #
 # 5. Posterior sampling ----
@@ -299,7 +397,7 @@ season_idx_tbl <- tibble(
 
 league_hfa_rvar <- posterior::rvar(league_draws)
 
-# filtered (last train season = 2024)
+# filtered (last trained season)
 filtered_league_col <- which(season_idx_tbl$season_idx == last_train_season_idx)
 filtered_league_hfa_inla <- tibble(
   season_idx = last_train_season_idx,
@@ -309,7 +407,7 @@ filtered_league_hfa_inla <- tibble(
   filtered_league_hfa = league_hfa_rvar[filtered_league_col]
 )
 
-# predicted (next season = 2025)
+# predicted (next target season/week)
 pred_league_col <- which(season_idx_tbl$season_idx == pred_season_idx)
 predicted_league_hfa_inla <- tibble(
   season_idx = pred_season_idx,
@@ -383,10 +481,35 @@ predicted_team_hfa_inla <- tibble(
 )
 
 # ============================================================================ #
-# 8. RW1 team strengths per (team, week_idx) as rvar ----
+# 8. AR1 team strengths per (team, week_idx) as rvar ----
 # ============================================================================ #
 
-# RW1 field with replicate => names typically "idx_week_home:<latent_idx>"
+# Season-start AR1 field (captures phi_season/sigma_season carry-over on first weeks)
+season_start_mask <- grepl("^season_start_home_idx", latent_names)
+season_start_draws <- extract_latent_draws(season_start_mask)
+if (ncol(season_start_draws) == 0L) {
+  season_start_idx_tbl <- tibble(
+    latent_name = character(),
+    latent_idx = integer(),
+    season_idx = integer(),
+    team_id = integer(),
+    team = character()
+  )
+  season_start_rvar <- posterior::rvar(matrix(nrow = nsamp, ncol = 0))
+} else {
+  season_start_idx_tbl <- tibble(
+    latent_name = colnames(season_start_draws)
+  ) |>
+    mutate(
+      latent_idx = as.integer(sub("^season_start_home_idx:", "", latent_name)),
+      season_idx = ((latent_idx - 1L) %% n_seasons) + 1L,
+      team_id = ((latent_idx - 1L) %/% n_seasons) + 1L,
+      team = team_levels[team_id]
+    )
+  season_start_rvar <- posterior::rvar(season_start_draws)
+}
+
+# AR1 field with replicate => names typically "idx_week_home:<latent_idx>"
 strength_mask <- grepl("^idx_week_home", latent_names)
 strength_draws <- extract_latent_draws(strength_mask)
 str(strength_draws)
@@ -410,6 +533,10 @@ filtered_strength_rows <- strength_idx_tbl |>
   filter(week_idx == last_train_week_idx) |>
   arrange(team_id)
 
+filtered_week_is_first <- any(
+  games_inla$fw_season_idx[games_inla$week_idx == last_train_week_idx] == 1L
+)
+
 filtered_strength_rvars <- lapply(
   filtered_strength_rows$latent_name,
   function(nm) {
@@ -417,6 +544,24 @@ filtered_strength_rvars <- lapply(
     strength_rvar[col_idx]
   }
 )
+
+if (filtered_week_is_first && ncol(season_start_draws) > 0L) {
+  filtered_start_rows <- season_start_idx_tbl |>
+    filter(season_idx == last_train_season_idx) |>
+    arrange(team_id)
+
+  filtered_start_rvars <- lapply(filtered_start_rows$latent_name, function(nm) {
+    col_idx <- which(colnames(season_start_draws) == nm)
+    season_start_rvar[col_idx]
+  })
+
+  stopifnot(length(filtered_start_rvars) == length(filtered_strength_rvars))
+  filtered_strength_rvars <- Map(
+    `+`,
+    filtered_strength_rvars,
+    filtered_start_rvars
+  )
+}
 
 filtered_strengths_inla <- tibble(
   season_idx = last_train_season_idx,
@@ -430,17 +575,35 @@ filtered_strengths_inla <- tibble(
     filtered_team_hfa_inla |> select(team, filtered_team_hfa),
     by = "team"
   )
-filtered_strengths_inla
+data.frame(filtered_strengths_inla)
 
 # PREDICTED strengths: pred_week_idx & pred_season_idx
 pred_strength_rows <- strength_idx_tbl |>
   filter(week_idx == pred_week_idx) |>
   arrange(team_id)
 
+pred_week_is_first <- any(
+  games_inla$fw_season_idx[games_inla$week_idx == pred_week_idx] == 1L
+)
+
 pred_strength_rvars <- lapply(pred_strength_rows$latent_name, function(nm) {
   col_idx <- which(colnames(strength_draws) == nm)
   strength_rvar[col_idx]
 })
+
+if (pred_week_is_first && ncol(season_start_draws) > 0L) {
+  pred_start_rows <- season_start_idx_tbl |>
+    filter(season_idx == pred_season_idx) |>
+    arrange(team_id)
+
+  pred_start_rvars <- lapply(pred_start_rows$latent_name, function(nm) {
+    col_idx <- which(colnames(season_start_draws) == nm)
+    season_start_rvar[col_idx]
+  })
+
+  stopifnot(length(pred_start_rvars) == length(pred_strength_rvars))
+  pred_strength_rvars <- Map(`+`, pred_strength_rvars, pred_start_rvars)
+}
 
 predicted_strengths_inla <- tibble(
   week_idx = pred_week_idx,
@@ -544,16 +707,16 @@ filtered_result_inla <- last_week_games |>
     y
   )
 
-## Predicted_result for 2025 W1 ----
+## Predicted_result for target week ----
 
-# rows for 2025 W1 predictions
+# rows for prediction horizon (next global week)
 pred_rows <- pred_idx
 
 mu_pred_list <- lapply(pred_rows, function(i_row) {
   lp_rvar[i_row]
 })
 
-# predictive y = mu + eps for 2025 W1
+# predictive y = mu + eps for next week
 set.seed(456)
 y_pred_matrix <- matrix(NA_real_, nrow = nsamp, ncol = length(pred_rows))
 for (i in seq_len(nsamp)) {
@@ -625,9 +788,9 @@ filtered_league_hfa_inla # 1-row tibble with rvar league HFA at last week
 filtered_strengths_inla # 32-row tibble with filtered_team_strength & filtered_team_hfa
 filtered_result_inla # game-level tibble for last observed week
 
-predicted_league_hfa_inla # 1-row tibble with rvar league HFA for 2025 W1
+predicted_league_hfa_inla # 1-row tibble with rvar league HFA for next week
 predicted_strengths_inla # 32-row tibble with predicted_team_strength & predicted_team_hfa
-predicted_result_inla # game-level tibble for 2025 W1 predictions
+predicted_result_inla # game-level tibble for next-week predictions
 
 
 # ============================================================================ #
@@ -962,7 +1125,11 @@ predicted_result_compare <- full_join(
 # ============================================================================ #
 # Re-print INLA fit summary
 print(fit_inla_sum, digits = 4)
-fit$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
+if (exists("fit") && exists("fit_stan_meta")) {
+  fit$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
+} else {
+  warning("Stan fit object `fit` not found; skipping Stan summary print.")
+}
 
 
 print(structure_check_tbl)

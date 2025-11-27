@@ -3,7 +3,7 @@
 
 # Step 1: Configure Stan models (generates Makevars, cleanup scripts, etc.)
 message("Configuring Stan package...")
-instantiate::stan_package_configure()
+instantiate::stan_package_configure(overwrite = TRUE)
 
 # Step 2: Document package (generates NAMESPACE and .Rd files from roxygen)
 message("Documenting package...")

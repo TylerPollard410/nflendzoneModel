@@ -15,6 +15,7 @@ library(lubridate)
 library(piggyback)
 library(purrr)
 library(dplyr)
+library(stringr)
 
 library(posterior)
 library(tidybayes)
@@ -48,6 +49,9 @@ all_seasons <- 2002:nflreadr::get_current_season()
 current_season <- nflreadr::get_current_season()
 current_week <- nflreadr::get_current_week()
 
+current_season <- 2025
+current_week <- 3
+
 # Load game data
 # Replace with: game_data_full <- nflendzone::load_game_data(seasons = all_seasons)
 game_data_full <- nflendzone::load_game_data(seasons = all_seasons)
@@ -80,8 +84,12 @@ schedule_idx <- prepare_schedule_indices(
 )
 
 # Filter to training data (before current season, only completed games)
-training_data <- game_data_full |>
-  filter(season < current_season, !is.na(result))
+training_data <- schedule_idx |>
+  filter(
+    season < current_season |
+      (season == current_season & week <= current_week),
+    !is.na(result)
+  )
 
 # Create Stan data
 fit_stan_data <- prepare_stan_data(
@@ -158,8 +166,26 @@ fit_files <- fit$save_output_files(
   random = FALSE
 )
 
-# fit_files <- paste0("artifacts/model-archive/team_strength/", "team_strength_fit-", 1:4, ".csv")
-# fit <- cmdstanr::as_cmdstan_fit(fit_files)
+pb_fit_files <- paste0(
+  "team_strength_fit-",
+  1:4,
+  ".csv"
+)
+pb_download(
+  file = pb_fit_files,
+  dest = "artifacts/model-archive/team_strength",
+  repo = github_data_repo,
+  tag = "team_strength_fit",
+  overwrite = TRUE
+)
+
+fit_files <- paste0(
+  "artifacts/model-archive/team_strength/",
+  "team_strength_fit-",
+  1:4,
+  ".csv"
+)
+fit <- cmdstanr::as_cmdstan_fit(fit_files)
 
 # ============================================================================ #
 # 4. Generate Predictions ----
@@ -601,3 +627,49 @@ upload_cmdstan_outputs(
 )
 
 cat("\n=== Complete ===\n")
+
+
+# Pathfinder ----
+library(cmdstanr)
+library(stringr)
+
+mod <- cmdstan_model(
+  "src/stan/team_strength_fit.stan",
+  compile = TRUE
+)
+
+opt <- mod$optimize(
+  data = fit_stan_data,
+  seed = fit_seed,
+  #init = fit_init,
+  sig_figs = fit_sig_figs,
+  iter = 50000,
+  jacobian = TRUE
+)
+
+mod_path2 <- mod$pathfinder(
+  data = fit_stan_data,
+  seed = fit_seed,
+  init = fit_init,
+  sig_figs = fit_sig_figs,
+  num_paths = 10,
+  max_lbfgs_iters = 100,
+  single_path_draws = 200,
+  draws = 200,
+  #num_elbo_draws = 50,
+  #psis_resample = FALSE,
+  #calculate_lp = FALSE,
+  history_size = 50
+)
+
+
+fit_stan_meta <- fit$metadata()
+
+fit$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
+opt$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
+mod_path$print(
+  variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma")
+)
+mod_path2$print(
+  variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma")
+)
