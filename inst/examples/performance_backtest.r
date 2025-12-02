@@ -191,6 +191,24 @@ perf_df <- perf_data |>
     )
   )
 
+print(
+  perf_df |>
+    mutate(strength_diff = home_strength - away_strength) |>
+    select(
+      season,
+      week,
+      game_id,
+      home_strength,
+      away_strength,
+      strength_diff,
+      home_hfa,
+      mu,
+      y
+    ) |>
+    filter(season == 2025, week == 1) |>
+    data.frame()
+)
+
 perf_results <- perf_df |>
   summarise(
     total_games = n(),
@@ -225,47 +243,3 @@ perf_results <- perf_df |>
     )
   )
 data.frame(perf_results)
-
-
-make_init <- function(prev_fit, new_data) {
-  nd <- new_data
-  d <- posterior::as_draws_df(prev_fit$draws(1)) # single draw
-  w_old <- prev_fit$metadata()$data()$N_weeks
-  w_new <- nd$N_weeks
-  Tm <- nd$N_teams
-  init_list <- list(
-    phi_league_hfa = d$phi_league_hfa,
-    sigma_league_hfa_innovation = d$sigma_league_hfa_innovation,
-    phi_weekly_team_strength_innovation = d$phi_weekly_team_strength_innovation,
-    sigma_weekly_team_strength_innovation = d$sigma_weekly_team_strength_innovation,
-    phi_season_team_strength_innovation = d$phi_season_team_strength_innovation,
-    sigma_season_team_strength_innovation = d$sigma_season_team_strength_innovation,
-    sigma_team_strength_init = d$sigma_team_strength_init,
-    sigma_obs = d$sigma_obs,
-    league_hfa_init = d$league_hfa_init,
-    z_team_strength_init = array(
-      dplyr::last(dplyr::select(d, starts_with("z_team_strength_init"))) %||% 0,
-      dim = c(Tm, 1)
-    ),
-    z_weekly_team_strength_innovation = array(0, dim = c(w_new - 1, Tm))
-  )
-  # copy old innovations
-  z_old <- posterior::draws_of(prev_fit$draws(
-    "z_weekly_team_strength_innovation"
-  ))[1, , , drop = FALSE]
-  n_copy <- min(dim(z_old)[2], w_new - 1)
-  if (n_copy > 0) {
-    init_list$z_weekly_team_strength_innovation[1:n_copy, ] <- z_old[
-      1,
-      1:n_copy,
-    ]
-  }
-  # fill any new weeks with small noise
-  if (w_new - 1 > n_copy) {
-    init_list$z_weekly_team_strength_innovation[(n_copy + 1):(w_new - 1), ] <-
-      rnorm((w_new - 1 - n_copy) * Tm, 0, 0.1)
-  }
-  init_list
-}
-
-make_init(fit, gq_stan_data)

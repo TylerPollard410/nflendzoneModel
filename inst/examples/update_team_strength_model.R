@@ -49,8 +49,8 @@ all_seasons <- 2002:nflreadr::get_current_season()
 current_season <- nflreadr::get_current_season()
 current_week <- nflreadr::get_current_week()
 
-current_season <- 2025
-current_week <- 3
+current_season <- 2006
+current_week <- 1
 
 # Load game data
 # Replace with: game_data_full <- nflendzone::load_game_data(seasons = all_seasons)
@@ -137,6 +137,7 @@ fit_max_treedepth = 10
 
 cat("\n=== Fitting Model ===\n")
 
+tictoc::tic("Model Fit Time")
 fit <- fit_team_strength_model(
   stan_data = fit_stan_data,
   seed = fit_seed,
@@ -150,6 +151,7 @@ fit <- fit_team_strength_model(
   adapt_delta = fit_adapt_delta,
   max_treedepth = fit_max_treedepth
 )
+tictoc::toc()
 
 # Ensure artifact directory exists (needed for save_output_files)
 artifact_dir <- "artifacts/model-archive/team_strength"
@@ -186,6 +188,13 @@ fit_files <- paste0(
   ".csv"
 )
 fit <- cmdstanr::as_cmdstan_fit(fit_files)
+
+## 3.1 Hyperparameter Diagnostics ----
+fit_meta <- fit$metadata()
+fit_hyperparams <- fit$summary(
+  variables = str_subset(fit_meta$stan_variables, "phi|sigma")
+)
+fit_hyperparams
 
 # ============================================================================ #
 # 4. Generate Predictions ----
@@ -254,6 +263,11 @@ fit_rvars <- as_draws_rvars(fit_draws)
 
 gq_draws <- gq$draws()
 gq_rvars <- as_draws_rvars(gq_draws)
+
+## Hypeerparameters ----
+fit_hyperparams <- fit$summary(
+  variables = str_subset(fit_meta$stan_variables, "phi|sigma")
+)
 
 ## Filtered ----
 ### Strength ----
@@ -667,9 +681,9 @@ fit_stan_meta <- fit$metadata()
 
 fit$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
 opt$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
-mod_path$print(
-  variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma")
-)
+# mod_path$print(
+#   variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma")
+# )
 mod_path2$print(
   variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma")
 )

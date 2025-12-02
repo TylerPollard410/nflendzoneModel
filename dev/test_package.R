@@ -2,7 +2,7 @@
 # Run this after installing the package to verify everything works
 
 # Load package
-devtools::install_github("TylerPollard410/nflendzoneModel")
+devtools::install_github("TylerPollard410/nflendzoneModel", force = TRUE)
 #install.packages(pkgs = "package_folder", type = "source", repos = NULL)
 library(nflendzoneModel)
 
