@@ -1,6 +1,4 @@
-# %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% #
 # CURRENT WEEK FIT - Using nflendzoneModel Package
-# %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% #
 #
 # This script reproduces current_week_fit.R functionality using the
 # nflendzoneModel package as an external user would.

@@ -7,7 +7,7 @@ instantiate::stan_package_configure(overwrite = TRUE)
 
 # Step 2: Document package (generates NAMESPACE and .Rd files from roxygen)
 message("Documenting package...")
-devtools::document()
+# devtools::document()
 
 attachment::att_amend_desc()
 
@@ -21,6 +21,7 @@ devtools::check()
 
 # Step 5: Install package (compiles Stan models during installation)
 message("Installing package...")
-devtools::install()
+#devtools::install()
+install.packages(".", repos = NULL, type = "source")
 
 message("✓ Build complete!")

@@ -51,6 +51,7 @@ rsconnect/
 
 # Mac OS
 .DS_Store
+_.DS_Store
 
 # Stan model compilation artifacts
 src/stan/**
