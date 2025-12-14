@@ -18,10 +18,14 @@
 #'     )
 #'   }
 #' }
-fit_team_strength_model <- function(stan_data, ...) {
+fit_team_strength_model <- function(
+  stan_data,
+  model = "team_strength_fit",
+  ...
+) {
   stopifnot(is.list(stan_data))
   model <- instantiate::stan_package_model(
-    name = "team_strength_fit",
+    name = model,
     package = "nflendzoneModel"
   )
   fit <- model$sample(data = stan_data, ...)
@@ -46,11 +50,16 @@ fit_team_strength_model <- function(stan_data, ...) {
 #'     )
 #'   }
 #' }
-generate_team_predictions <- function(fit, gq_data, ...) {
+generate_team_predictions <- function(
+  fit,
+  gq_data,
+  model = "team_strength_gq",
+  ...
+) {
   stopifnot(inherits(fit, "CmdStanMCMC"))
   stopifnot(is.list(gq_data))
   model <- instantiate::stan_package_model(
-    name = "team_strength_gq",
+    name = model,
     package = "nflendzoneModel"
   )
   gq <- model$generate_quantities(fitted_params = fit, data = gq_data, ...)
@@ -97,33 +106,54 @@ generate_team_predictions <- function(fit, gq_data, ...) {
 #' draws <- readRDS("model_draws.rds")
 #' gq <- predict_team_strength(draws, gq_data)
 #' }
-predict_team_strength <- function(draws, gq_data, ...) {
+predict_team_strength <- function(
+  model = "team_strength_gq",
+  draws,
+  gq_data,
+  ...
+) {
   stopifnot(is.list(gq_data))
 
   # Load GQ model
   gq_model <- instantiate::stan_package_model(
-    name = "team_strength_gq",
+    name = model,
     package = "nflendzoneModel"
   )
 
   # Handle different input types for draws
   if (inherits(draws, "CmdStanMCMC")) {
     # If passed a fit object, use it directly
-    gq <- gq_model$generate_quantities(fitted_params = draws, data = gq_data, ...)
+    gq <- gq_model$generate_quantities(
+      fitted_params = draws,
+      data = gq_data,
+      ...
+    )
   } else if (is.character(draws) && file.exists(draws)) {
     # If passed a file path, load it
     if (grepl("\\.rds$", draws)) {
       loaded_draws <- readRDS(draws)
-      gq <- gq_model$generate_quantities(fitted_params = loaded_draws, data = gq_data, ...)
+      gq <- gq_model$generate_quantities(
+        fitted_params = loaded_draws,
+        data = gq_data,
+        ...
+      )
     } else if (grepl("\\.csv$", draws)) {
       loaded_draws <- cmdstanr::read_cmdstan_csv(draws)
-      gq <- gq_model$generate_quantities(fitted_params = loaded_draws, data = gq_data, ...)
+      gq <- gq_model$generate_quantities(
+        fitted_params = loaded_draws,
+        data = gq_data,
+        ...
+      )
     } else {
       stop("File must be .rds or .csv format")
     }
   } else {
     # Assume it's already draws in a format cmdstan can use
-    gq <- gq_model$generate_quantities(fitted_params = draws, data = gq_data, ...)
+    gq <- gq_model$generate_quantities(
+      fitted_params = draws,
+      data = gq_data,
+      ...
+    )
   }
 
   gq

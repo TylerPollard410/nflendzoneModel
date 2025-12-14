@@ -19,7 +19,7 @@ library(tictoc)
 
 library(posterior)
 library(tidybayes)
-library(cmdstanr)
+#library(cmdstanr)
 
 library(KFAS)
 library(bssm)
@@ -112,24 +112,14 @@ gq_stan_data <- prepare_gq_data(
 # 3. Fit Model ----
 # ============================================================================ #
 
-fit_new_team_strength_model <- function(stan_data, model_name, ...) {
-  stopifnot(is.list(stan_data))
-  model <- instantiate::stan_package_model(
-    name = model_name,
-    package = "nflendzoneModel"
-  )
-  fit <- model$sample(data = stan_data, ...)
-  fit
-}
-
 # Globals
 fit_seed = 52
 fit_init = 0
 fit_sig_figs = 10
 fit_chains = 4
 fit_parallel = parallel::detectCores()
-fit_warm = 1000
-fit_samps = 1000
+fit_warm = 500
+fit_samps = 500
 fit_thin = 1
 fit_adapt_delta = 0.95
 fit_max_treedepth = 10
@@ -138,6 +128,7 @@ cat("\n=== Fitting Model ===\n")
 
 ## 3.1 Fit Model ----
 fit_univar_normal <- fit_team_strength_model(
+  model = "team_strength_fit",
   stan_data = fit_stan_data,
   seed = fit_seed,
   init = 0,
@@ -151,9 +142,9 @@ fit_univar_normal <- fit_team_strength_model(
   max_treedepth = fit_max_treedepth
 )
 
-fit_univar_student <- fit_new_team_strength_model(
+fit_univar_student <- fit_team_strength_model(
   stan_data = fit_stan_data,
-  model_name = "team_strength_univar_student",
+  model = "team_strength_univar_student",
   seed = fit_seed,
   init = 0,
   sig_figs = fit_sig_figs,
@@ -166,9 +157,9 @@ fit_univar_student <- fit_new_team_strength_model(
   max_treedepth = fit_max_treedepth
 )
 
-fit_bivar_normal <- fit_new_team_strength_model(
+fit_bivar_normal <- fit_team_strength_model(
   stan_data = fit_stan_data,
-  model_name = "team_strength_bivar_normal",
+  model = "team_strength_bivar_normal",
   seed = fit_seed,
   init = 0,
   sig_figs = fit_sig_figs,
@@ -181,9 +172,9 @@ fit_bivar_normal <- fit_new_team_strength_model(
   max_treedepth = fit_max_treedepth
 )
 
-fit_bivar_poisson <- fit_new_team_strength_model(
+fit_bivar_poisson <- fit_team_strength_model(
   stan_data = fit_stan_data,
-  model_name = "team_strength_bivar_poisson",
+  model = "team_strength_bivar_poisson",
   seed = fit_seed,
   init = 0,
   sig_figs = fit_sig_figs,
@@ -196,9 +187,9 @@ fit_bivar_poisson <- fit_new_team_strength_model(
   max_treedepth = fit_max_treedepth
 )
 
-fit_bivar_negbinom <- fit_new_team_strength_model(
+fit_bivar_negbinom <- fit_team_strength_model(
   stan_data = fit_stan_data,
-  model_name = "team_strength_bivar_negbinom",
+  model = "team_strength_bivar_negbinom",
   seed = fit_seed,
   init = 0,
   sig_figs = fit_sig_figs,
@@ -240,13 +231,11 @@ fit_list |>
       toc()
     }
   )
-# fit_bivar_negbinom$save_object(
-#   file = paste0(
-#     "artifacts/model-archive/team_strength/",
-#     "bivar_negbinom",
-#     ".rds"
-#   )
-# )
+
+fit_loo <- fit_list |>
+  map(\(.fit) .fit$loo())
+fit_loo |> loo::loo_compare()
+fit_loo |> loo::loo_model_weights()
 
 # ============================================================================ #
 # 4. Generate Predictions ----
@@ -313,7 +302,7 @@ predict_week <- schedule_idx |>
 #fit_draws <- fit$draws()
 #fit_rvars <- as_draws_rvars(fit_draws)
 
-fit_draws_list <- fit_list |>
+fit_rvars_list <- fit_list |>
   map(
     \(.fit) {
       .fit$draws() |>
@@ -324,27 +313,85 @@ fit_draws_list <- fit_list |>
 # gq_draws <- gq$draws()
 # gq_rvars <- as_draws_rvars(gq_draws)
 
-## Hypeerparameters ----
-fit_hyperparams <- fit_list |>
-  imap(
-    \(.fit, .name) {
-      .fit$summary(
-        variables = str_subset(.fit$metadata()$stan_variables, "phi|sigma")
-      ) |>
-        mutate(model = .name, .before = 1)
-    }
-  ) |>
-  bind_rows() |>
-  mutate(
-    model = factor(
-      model,
-      levels = fit_names
-    )
-  ) |>
-  arrange(variable, model)
+## Hyperparameters + helpers (apples-to-apples) ----
+# Robust summariser (avoid quantile helper issues)
+summarize_hparams <- function(draws) {
+  posterior::summarize_draws(draws, "mean", "sd", "median", "mad") |>
+    dplyr::select(variable, mean, sd, median, mad)
+}
 
-fit_strengths_list <- fit_draws_list |>
-  map(\(x) keep_at(x, str_subset(names(x), "filtered|predicted")))
+has_var <- function(draws, var) {
+  any(stringr::str_detect(
+    posterior::variables(draws),
+    paste0("^", var, "(\\\[|$)")
+  ))
+}
+
+only_elem_cols <- function(df, base) {
+  nm <- names(df)
+  nm[stringr::str_detect(nm, paste0("^", base, "\\\\[\\d+\\\\]$"))]
+}
+
+extract_hyperparams <- function(fit, model_label) {
+  dr <- fit$draws()
+  vars <- c(
+    # League/Team HFA process
+    "phi_league_hfa",
+    "sigma_league_hfa_innovation",
+    "league_hfa_init",
+    "sigma_team_hfa",
+    # Strength init scales
+    "sigma_team_strength_init",
+    "sigma_team_off_init",
+    "sigma_team_def_init",
+    # Weekly persistence + scales
+    "phi_weekly_team_strength_innovation",
+    "sigma_weekly_team_strength_innovation",
+    "phi_weekly_off",
+    "phi_weekly_def",
+    "sigma_weekly_off_innov",
+    "sigma_weekly_def_innov",
+    # Season persistence + scales
+    "phi_season_team_strength_innovation",
+    "sigma_season_team_strength_innovation",
+    "phi_season_off",
+    "phi_season_def",
+    "sigma_season_off_innov",
+    "sigma_season_def_innov",
+    # Observation/intercepts
+    "nu_obs",
+    "sigma_obs", # univar student
+    "alpha_score_points", # bivar normal
+    "alpha_score", # bivar poisson (log-scale)
+    "alpha_score_raw",
+    "log_phi_home",
+    "log_phi_away",
+    "log_sigma_eps_week" # negbinom
+  )
+  present <- vars[purrr::map_lgl(vars, ~ has_var(dr, .x))]
+  if (length(present) == 0) {
+    return(dplyr::tibble(
+      model = model_label,
+      variable = character(),
+      mean = numeric()
+    ))
+  }
+  dr |>
+    posterior::subset_draws(variables = present) |>
+    summarize_hparams() |>
+    dplyr::mutate(model = model_label, .before = 1)
+}
+
+fit_hyperparams <- fit_list |>
+  purrr::imap(~ extract_hyperparams(.x, .y)) |>
+  dplyr::bind_rows() |>
+  dplyr::mutate(model = factor(model, levels = fit_names)) |>
+  dplyr::arrange(variable, model)
+
+fit_strengths_list <- fit_rvars_list |>
+  purrr::map(\(x) {
+    keep_at(x, stringr::str_subset(names(x), "filtered|predicted"))
+  })
 
 possible_exprs <- c(
   "filtered_team_strength[team]",
@@ -380,44 +427,19 @@ possible_exprs <- c(
 # )
 
 fit_strengths <- fit_strengths_list |>
-  imap(
+  purrr::imap(
     \(.rvars, .name) {
-      #rvars_expr <- str_subset(possible_exprs, names(.rvars))
-      if (str_detect(.name, "univar")) {
+      if (stringr::str_detect(.name, "univar")) {
         .rvars |>
           spread_rvars(
             filtered_team_strength[team],
-            # filter_team_off_strength[team],
-            # filter_team_def_strength[team],
             filtered_team_hfa[team],
             filtered_league_hfa[season],
             predicted_team_strength[team],
-            # filter_team_off_strength[team],
-            # filter_team_def_strength[team],
             predicted_team_hfa[team],
             predicted_league_hfa[season]
           ) |>
-          mutate(
-            model = .name,
-            season = current_season,
-            team = teams[team],
-            .before = 1
-          )
-      } else if (str_detect(.name, "bivar_normal")) {
-        .rvars |>
-          spread_rvars(
-            # filtered_team_strength[team],
-            filtered_team_off_strength[team],
-            filtered_team_def_strength[team],
-            filtered_team_hfa[team],
-            filtered_league_hfa[season],
-            # predicted_team_strength[team],
-            predicted_team_off_strength[team],
-            predicted_team_def_strength[team],
-            predicted_team_hfa[team],
-            predicted_league_hfa[season]
-          ) |>
-          mutate(
+          dplyr::mutate(
             model = .name,
             season = current_season,
             team = teams[team],
@@ -426,18 +448,20 @@ fit_strengths <- fit_strengths_list |>
       } else {
         .rvars |>
           spread_rvars(
-            # filtered_team_strength[team],
             filtered_team_off_strength[team],
             filtered_team_def_strength[team],
             filtered_team_hfa[team],
-            filtered_league_hfa[season]
-            # predicted_team_strength[team],
-            # predicted_team_off_strength[team],
-            # predicted_team_def_strength[team],
-            # predicted_team_hfa[team],
-            # predicted_league_hfa[season]
+            filtered_league_hfa[season],
+            predicted_team_off_strength[team],
+            predicted_team_def_strength[team],
+            predicted_team_hfa[team],
+            predicted_league_hfa[season]
           ) |>
-          mutate(
+          dplyr::mutate(
+            filtered_team_strength = filtered_team_off_strength +
+              filtered_team_def_strength,
+            predicted_team_strength = predicted_team_off_strength +
+              predicted_team_def_strength,
             model = .name,
             season = current_season,
             team = teams[team],
@@ -447,490 +471,74 @@ fit_strengths <- fit_strengths_list |>
     }
   ) |>
   list_rbind() |>
-  mutate(
-    model = factor(
-      model,
-      levels = fit_names
-    )
-  ) |>
-  select(
+  dplyr::mutate(model = factor(model, levels = fit_names)) |>
+  dplyr::select(
     model,
     season,
     team,
     contains("filtered"),
     contains("predicted")
   ) |>
-  relocate(
+  dplyr::relocate(
     "filtered_team_off_strength",
     "filtered_team_def_strength",
     .before = filtered_team_strength
   ) |>
-  relocate(
+  dplyr::relocate(
     "predicted_team_off_strength",
     "predicted_team_def_strength",
     .before = predicted_team_strength
   ) |>
+  dplyr::arrange(team, model)
+
+
+possible_exprs <- c(
+  "filtered_team_strength[team]",
+  "filtered_team_off_strength[team]",
+  "filtered_team_def_strength[team]",
+  "filtered_team_hfa[team]",
+  "filtered_league_hfa",
+  "predicted_team_strength[team]",
+  "predicted_team_off_strength[team]",
+  "predicted_team_def_strength[team]",
+  "predicted_team_hfa[team]",
+  "predicted_league_hfa"
+)
+
+
+comp_list <- fit_rvars_list |>
+  keep_at(c("univar_normal", "bivar_negbinom"))
+comp_list |>
+  map_depth(2, \(x) attr(x, "dims") <- dim(x))
+
+comp_fits <- comp_list |>
+  imap(
+    \(.rvars, .name) {
+      rvars_expr <- str_subset(
+        possible_exprs,
+        str_c(names(.rvars), collapse = "|")
+      ) |>
+        rlang::parse_exprs()
+
+      .rvars |>
+        spread_rvars(
+          !!!rvars_expr
+        )
+    }
+  ) |>
+  list_rbind(names_to = "model") |>
+  mutate(
+    team = teams[team],
+    model = factor(model, levels = fit_names),
+    filtered_team_strength = if_else(
+      model == "bivar_negbinom",
+      exp(filtered_team_off_strength + filtered_team_def_strength),
+      filtered_team_strength
+    ),
+    predicted_team_strength = if_else(
+      model == "bivar_negbinom",
+      exp(predicted_team_off_strength + predicted_team_def_strength),
+      filtered_team_strength
+    )
+  ) |>
   arrange(team, model)
-
-fit_strengths_list2 <- fit_strengths_list |> #compact()
-  reduce(union_all)
-
-## Extract posteriors by model ----
-post_strengths_univar_normal <- fit_draws_list |>
-  pluck("univar_normal") |>
-  spread_rvars(
-    filtered_team_strength[team],
-    filtered_team_hfa[team],
-    filtered_league_hfa,
-    predicted_team_strength[team],
-    predicted_team_hfa[team],
-    predicted_league_hfa
-  ) |>
-  mutate(
-    model = "univar_normal",
-    season = current_season,
-    team = teams[team],
-    .before = 1
-  )
-
-post_strengths_univar_student <- fit_draws_list |>
-  pluck("univar_student") |>
-  spread_rvars(
-    filtered_team_strength[team],
-    filtered_team_hfa[team],
-    filtered_league_hfa,
-    predicted_team_strength[team],
-    predicted_team_hfa[team],
-    predicted_league_hfa
-  ) |>
-  mutate(
-    model = "univar_student",
-    season = current_season,
-    team = teams[team],
-    .before = 1
-  )
-
-post_strengths_bivar_normal <- fit_draws_list |>
-  pluck("bivar_normal") |>
-  spread_rvars(
-    # filtered_team_strength[team],
-    filtered_team_off_strength[team],
-    filtered_team_def_strength[team],
-    filtered_team_hfa[team],
-    filtered_league_hfa[season],
-    # predicted_team_strength[team],
-    predicted_team_off_strength[team],
-    predicted_team_def_strength[team],
-    predicted_team_hfa[team],
-    predicted_league_hfa[season]
-  ) |>
-  mutate(
-    model = "bivar_normal",
-    season = current_season,
-    team = teams[team],
-    .before = 1
-  )
-
-post_strengths_bivar_poisson <- fit_draws_list |>
-  pluck("bivar_poisson") |>
-  spread_rvars(
-    # filtered_team_strength[team],
-    filtered_team_off_strength[team],
-    filtered_team_def_strength[team],
-    filtered_team_hfa[team],
-    filtered_league_hfa[season],
-    # predicted_team_strength[team],
-    predicted_team_off_strength[team],
-    predicted_team_def_strength[team],
-    predicted_team_hfa[team],
-    predicted_league_hfa[season]
-  ) |>
-  mutate(
-    model = "bivar_poisson",
-    season = current_season,
-    team = teams[team],
-    .before = 1
-  )
-
-post_strengths_bivar_negbinom <- fit_draws_list |>
-  pluck("bivar_negbinom") |>
-  spread_rvars(
-    # filtered_team_strength[team],
-    filtered_team_off_strength[team],
-    filtered_team_def_strength[team],
-    filtered_team_hfa[team],
-    filtered_league_hfa[season],
-    # predicted_team_strength[team],
-    predicted_team_off_strength[team],
-    predicted_team_def_strength[team],
-    predicted_team_hfa[team],
-    predicted_league_hfa[season]
-  ) |>
-  mutate(
-    model = "bivar_negbinom",
-    season = current_season,
-    team = teams[team],
-    .before = 1
-  )
-
-# ## Filtered ----
-# ### Strength ----
-# filtered_strengths <- gq_rvars |>
-#   spread_rvars(
-#     filtered_team_strength[team],
-#     filtered_team_hfa[team]
-#   ) |>
-#   mutate(
-#     week_idx = filter_week_idx,
-#     team = teams[team]
-#   ) |>
-#   left_join(
-#     schedule_idx |>
-#       select(season_idx, week_idx, season, week) |>
-#       distinct(),
-#     by = "week_idx"
-#   ) |>
-#   relocate(season_idx, week_idx, season, week, .before = 1)
-
-# ### League HFA ----
-# filtered_league_hfa <- gq_rvars |>
-#   spread_rvars(
-#     filtered_league_hfa
-#   ) |>
-#   mutate(
-#     week_idx = filter_week_idx
-#   ) |>
-#   left_join(
-#     schedule_idx |>
-#       select(season_idx, week_idx, season, week) |>
-#       distinct(),
-#     by = "week_idx"
-#   ) |>
-#   relocate(season_idx, week_idx, season, week, .before = 1)
-
-# ### Results ----
-# # filtered_result <- schedule_idx |>
-# #   filter(week_idx == fit_stan_data$N_weeks) |>
-# #   select(
-# #     game_idx,
-# #     game_id,
-# #     season_idx,
-# #     week_idx,
-# #     season,
-# #     week,
-# #     hfa,
-# #     home_team,
-# #     away_team
-# #   ) |>
-# #   left_join(
-# #     fit_rvars |>
-# #       spread_rvars(
-# #         mu[game_idx],
-# #         sigma_obs
-# #       ),
-# #     by = "game_idx"
-# #   ) |>
-# #   mutate(
-# #     y_obs = rvar_rng(rnorm, 1, mu, sigma_obs),
-# #     .by = game_id
-# #   ) |>
-# #   as_tibble()
-
-# filtered_result <- schedule_idx |>
-#   filter(week_idx == filter_week_idx) |>
-#   select(
-#     game_idx,
-#     game_id,
-#     season_idx,
-#     week_idx,
-#     season,
-#     week,
-#     hfa,
-#     home_team,
-#     away_team
-#   ) |>
-#   left_join(
-#     filtered_strengths |>
-#       rename(
-#         home_strength = filtered_team_strength,
-#         home_hfa = filtered_team_hfa
-#       ),
-#     by = join_by(season_idx, week_idx, season, week, home_team == team)
-#   ) |>
-#   left_join(
-#     filtered_strengths |>
-#       select(-filtered_team_hfa) |>
-#       rename(
-#         away_strength = filtered_team_strength
-#       ),
-#     by = join_by(season_idx, week_idx, season, week, away_team == team)
-#   ) |>
-#   mutate(
-#     sigma = gq_rvars$sigma_pred,
-#     mu = home_strength - away_strength + home_hfa * hfa,
-#     y = rvar_rng(rnorm, 1, mu, sigma),
-#     .by = game_id
-#   )
-
-# ## Predicted ----
-# ### Strength ----
-# predicted_strengths <- gq_rvars |>
-#   spread_rvars(
-#     predicted_team_strength[week_idx, team],
-#     predicted_team_hfa[week_idx, team]
-#   ) |>
-#   mutate(
-#     week_idx = gq_targets[week_idx],
-#     team = teams[team]
-#   )
-
-# ### League HFA ----
-# predicted_league_hfa <- gq_rvars |>
-#   spread_rvars(
-#     predicted_league_hfa
-#   ) |>
-#   mutate(
-#     season_idx = gq_stan_data$future_week_to_season[1],
-#     week_idx = predict_week_idx
-#   ) |>
-#   left_join(
-#     schedule_idx |>
-#       select(season_idx, week_idx, season, week) |>
-#       distinct(),
-#     by = c("season_idx", "week_idx")
-#   ) |>
-#   relocate(season_idx, week_idx, season, week, .before = 1)
-
-# ### Results ----
-# if (nrow(oos_games) == 0) {
-#   stop("No out-of-sample games to predict.")
-# } else {
-#   predicted_result <- schedule_idx |>
-#     filter(week_idx == predict_week_idx) |>
-#     select(
-#       game_idx,
-#       game_id,
-#       season_idx,
-#       week_idx,
-#       season,
-#       week,
-#       hfa,
-#       home_team,
-#       away_team
-#     ) |>
-#     left_join(
-#       predicted_strengths |>
-#         rename(
-#           home_strength = predicted_team_strength,
-#           home_hfa = predicted_team_hfa
-#         ),
-#       by = join_by(week_idx, home_team == team)
-#     ) |>
-#     left_join(
-#       predicted_strengths |>
-#         select(-predicted_team_hfa) |>
-#         rename(
-#           away_strength = predicted_team_strength
-#         ),
-#       by = join_by(week_idx, away_team == team)
-#     ) |>
-#     mutate(
-#       sigma = gq_rvars$sigma_pred,
-#       mu = home_strength - away_strength + home_hfa * hfa,
-#       y = rvar_rng(rnorm, 1, mu, sigma),
-#       .by = game_id
-#     )
-# }
-
-# # ============================================================================ #
-# # 7. Save Output for Fit ----
-# # ============================================================================ #
-
-# fit_list <- list(
-#   fit_rvars,
-#   fit_hyperparams,
-#   filtered_strengths,
-#   filtered_league_hfa,
-#   filtered_result,
-#   predicted_strengths,
-#   predicted_league_hfa,
-#   predicted_result
-# )
-
-# ============================================================================ #
-# 8. Save Output to Release ----
-# ============================================================================ #
-
-cat("\n=== Save Release ===\n")
-
-# Create release tags
-model_tags <- c(
-  "team_strength_filter",
-  "league_hfa_filter",
-  "result_filter",
-  "team_strength_predict",
-  "league_hfa_predict",
-  "result_predict",
-  "team_strength_fit",
-  "team_strength_gq"
-)
-
-# Create new release for each tag (if not exists)
-suppressWarnings({
-  purrr::walk(
-    model_tags,
-    ~ piggyback::pb_new_release(repo = github_data_repo, tag = .x)
-  )
-})
-
-# ---------------------------------------------------------------------------- #
-## Upload Filtered Estimates ----
-
-upload_model_output(
-  data = filtered_strengths,
-  tag = "team_strength_filter",
-  season = filter_season,
-  week = filter_week,
-  week_idx = filter_week_idx,
-  repo = github_data_repo
-)
-
-upload_model_output(
-  data = filtered_league_hfa,
-  tag = "league_hfa_filter",
-  season = filter_season,
-  week = filter_week,
-  week_idx = filter_week_idx,
-  repo = github_data_repo
-)
-
-upload_model_output(
-  data = filtered_result,
-  tag = "result_filter",
-  season = filter_season,
-  week = filter_week,
-  week_idx = filter_week_idx,
-  repo = github_data_repo
-)
-
-# ---------------------------------------------------------------------------- #
-## Upload Predicted Estimates ----
-
-upload_model_output(
-  data = predicted_strengths,
-  tag = "team_strength_predict",
-  season = predict_season,
-  week = predict_week,
-  week_idx = predict_week_idx,
-  repo = github_data_repo
-)
-
-upload_model_output(
-  data = predicted_league_hfa,
-  tag = "league_hfa_predict",
-  season = predict_season,
-  week = predict_week,
-  week_idx = predict_week_idx,
-  repo = github_data_repo
-)
-
-upload_model_output(
-  data = predicted_result,
-  tag = "result_predict",
-  season = predict_season,
-  week = predict_week,
-  week_idx = predict_week_idx,
-  repo = github_data_repo
-)
-
-# ---------------------------------------------------------------------------- #
-## Upload Model Objects ----
-
-cat("\n=== Upload Model Objects ===\n")
-
-### Team Strength Fit ----
-fit_tag <- "team_strength_fit"
-fit_timestamp <- c(
-  season = filter_season,
-  week = filter_week,
-  week_idx = filter_week_idx
-)
-
-## Upload
-upload_cmdstan_outputs(
-  files = fit_files,
-  tag = fit_tag,
-  repo = github_data_repo,
-  timestamp = fit_timestamp
-)
-
-### Team Strength GQ ----
-gq_tag <- "team_strength_gq"
-predict_timestamp <- c(
-  season = predict_season,
-  week = predict_week,
-  week_idx = predict_week_idx
-)
-predict_metadata <- NULL
-if (!any(is.na(predict_timestamp))) {
-  predict_metadata <- list(
-    predict_timestamp = as.list(predict_timestamp)
-  )
-}
-
-## Upload
-upload_cmdstan_outputs(
-  files = gq_files,
-  tag = gq_tag,
-  repo = github_data_repo,
-  timestamp = fit_timestamp,
-  metadata = predict_metadata
-)
-
-cat("\n=== Complete ===\n")
-
-
-# Pathfinder ----
-library(cmdstanr)
-library(stringr)
-
-mod <- cmdstan_model(
-  "src/stan/team_strength_fit.stan",
-  compile = TRUE
-)
-
-opt <- mod$optimize(
-  data = fit_stan_data,
-  seed = fit_seed,
-  #init = fit_init,
-  sig_figs = fit_sig_figs,
-  iter = 50000,
-  jacobian = TRUE
-)
-
-mod_path2 <- mod$pathfinder(
-  data = fit_stan_data,
-  seed = fit_seed,
-  init = fit_init,
-  sig_figs = fit_sig_figs,
-  num_paths = 10,
-  max_lbfgs_iters = 100,
-  single_path_draws = 200,
-  draws = 200,
-  #num_elbo_draws = 50,
-  #psis_resample = FALSE,
-  #calculate_lp = FALSE,
-  history_size = 50
-)
-
-
-fit_stan_meta <- fit$metadata()
-
-fit$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
-opt$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
-# mod_path$print(
-#   variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma")
-# )
-mod_path2$print(
-  variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma")
-)
