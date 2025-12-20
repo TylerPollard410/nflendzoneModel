@@ -85,7 +85,7 @@ schedule_idx <- prepare_schedule_indices(
 training_data <- schedule_idx |>
   filter(
     season < current_season |
-      (season == current_season & week <= current_week),
+      (season == current_season & week < current_week),
     !is.na(result)
   )
 
@@ -135,8 +135,27 @@ fit_max_treedepth = 10
 
 cat("\n=== Fitting Model ===\n")
 
+mod <- cmdstanr::cmdstan_model(
+  "src/stan/team_strength_fit2.stan",
+  compile = TRUE
+)
+
+fit <- mod$sample(
+  data = fit_stan_data,
+  seed = fit_seed,
+  init = 0,
+  sig_figs = fit_sig_figs,
+  chains = fit_chains,
+  parallel_chains = fit_parallel,
+  iter_warmup = fit_warm,
+  iter_sampling = fit_samps,
+  thin = fit_thin,
+  adapt_delta = fit_adapt_delta,
+  max_treedepth = fit_max_treedepth
+)
+
 tictoc::tic("Model Fit Time")
-fit <- fit_team_strength_model(
+fit2 <- fit_team_strength_model(
   stan_data = fit_stan_data,
   seed = fit_seed,
   init = 0,
@@ -185,7 +204,7 @@ fit_files <- paste0(
   1:4,
   ".csv"
 )
-fit <- cmdstanr::as_cmdstan_fit(fit_files)
+fit2 <- cmdstanr::as_cmdstan_fit(fit_files)
 
 ## 3.1 Hyperparameter Diagnostics ----
 fit_meta <- fit$metadata()
@@ -263,13 +282,19 @@ gq_draws <- gq$draws()
 gq_rvars <- as_draws_rvars(gq_draws)
 
 ## Hypeerparameters ----
-fit_hyperparams <- fit$summary(
+fit_hyperparams <- fit2$summary(
   variables = str_subset(fit_meta$stan_variables, "phi|sigma")
+)
+
+bayesplot::mcmc_hist(
+  fit_draws,
+  pars = str_subset(fit_meta$stan_variables, "phi|sigma"),
+  facet_args = list(ncol = 2)
 )
 
 ## Filtered ----
 ### Strength ----
-filtered_strengths <- gq_rvars |>
+filtered_strengths <- fit_rvars |> #gq_rvars |>
   spread_rvars(
     filtered_team_strength[team],
     filtered_team_hfa[team]
@@ -287,7 +312,7 @@ filtered_strengths <- gq_rvars |>
   relocate(season_idx, week_idx, season, week, .before = 1)
 
 ### League HFA ----
-filtered_league_hfa <- gq_rvars |>
+filtered_league_hfa <- fit_rvars |> #gq_rvars |>
   spread_rvars(
     filtered_league_hfa
   ) |>
@@ -360,7 +385,7 @@ filtered_result <- schedule_idx |>
     by = join_by(season_idx, week_idx, season, week, away_team == team)
   ) |>
   mutate(
-    sigma = gq_rvars$sigma_pred,
+    sigma = fit_rvars$sigma_obs, #gq_rvars$sigma_pred,
     mu = home_strength - away_strength + home_hfa * hfa,
     y = rvar_rng(rnorm, 1, mu, sigma),
     .by = game_id
@@ -369,7 +394,7 @@ filtered_result <- schedule_idx |>
 
 ## Predicted ----
 ### Strength ----
-predicted_strengths <- gq_rvars |>
+predicted_strengths <- fit_rvars |> #gq_rvars |>
   spread_rvars(
     predicted_team_strength[week_idx, team],
     predicted_team_hfa[week_idx, team]
@@ -380,7 +405,7 @@ predicted_strengths <- gq_rvars |>
   )
 
 ### League HFA ----
-predicted_league_hfa <- gq_rvars |>
+predicted_league_hfa <- fit_rvars |> #gq_rvars |>
   spread_rvars(
     predicted_league_hfa
   ) |>
@@ -684,4 +709,19 @@ opt$print(variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma"))
 # )
 mod_path2$print(
   variables = str_subset(fit_stan_meta$stan_variables, "phi|sigma")
+)
+
+fitL <- mod$laplace(
+  data = fit_stan_data,
+  seed = fit_seed,
+  init = fit_init,
+  sig_figs = fit_sig_figs
+  # num_paths = 10,
+  # max_lbfgs_iters = 100,
+  # single_path_draws = 200,
+  # draws = 200,
+  #num_elbo_draws = 50,
+  #psis_resample = FALSE,
+  #calculate_lp = FALSE,
+  # history_size = 50
 )

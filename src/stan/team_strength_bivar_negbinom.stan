@@ -6,7 +6,7 @@ functions {
                                array[] int hfa,
                                array[] vector team_off_strength,
                                array[] vector team_def_strength,
-                               array[] vector team_hfa, real alpha_log,
+                               array[] vector team_hfa, vector alpha_log,
                                int N_games) {
     matrix[N_games, 2] eta;
     for (g in 1 : N_games) {
@@ -14,11 +14,12 @@ functions {
       int s = season_idx[g];
       int h = home_team[g];
       int a = away_team[g];
-      eta[g, 1] = alpha_log
+      eta[g, 1] = alpha_log[s]
                   + (team_off_strength[w][h] - team_def_strength[w][a])
-                  + (hfa[g] == 1 ? team_hfa[s][h] : 0);
-      eta[g, 2] = alpha_log
-                  + (team_off_strength[w][a] - team_def_strength[w][h]);
+                  + (hfa[g] == 1 ? 0.5 * team_hfa[s][h] : 0);
+      eta[g, 2] = alpha_log[s]
+                  + (team_off_strength[w][a] - team_def_strength[w][h])
+                  - (hfa[g] == 1 ? 0.5 * team_hfa[s][h] : 0);
     }
     return eta;
   }
@@ -114,26 +115,36 @@ parameters {
   // Scoring intercept on natural scale -> transformed to log
   real<lower=5> alpha_score_raw;
   
+  // Season-level scoring environment on log scale (AR(1) deviations)
+  real alpha_log_dev_init;
+  vector[N_seasons - 1] z_alpha_log_dev_innovation;
+  real<lower=0> sigma_alpha_log_dev_innovation;
+  real<lower=0, upper=1> phi_alpha_log;
+  
   // Overdispersion (NegBinomial-2) on log scale for better geometry
   real log_phi_home;
   real log_phi_away;
-  
-  // Shared week-level shock non-centered (applied to all games in a week)
-  vector[N_weeks] z_eps_week;
-  real log_sigma_eps_week;
 }
 transformed parameters {
   // Derived intercept and scales
-  real alpha_log = log(alpha_score_raw);
-  real<lower=0> sigma_eps_week = exp(log_sigma_eps_week);
+  real alpha_log_base = log(alpha_score_raw);
+  vector[N_seasons] alpha_log_dev;
+  vector[N_seasons] alpha_log;
   real<lower=0> phi_home = exp(log_phi_home);
   real<lower=0> phi_away = exp(log_phi_away);
-  vector[N_weeks] eps_week = z_eps_week * sigma_eps_week;
   vector[N_seasons] league_hfa;
   array[N_seasons] vector[N_teams] team_hfa;
   
   array[N_weeks] vector[N_teams] team_off_strength;
   array[N_weeks] vector[N_teams] team_def_strength;
+  array[N_weeks] vector[N_teams] team_strength;
+  
+  alpha_log_dev[1] = alpha_log_dev_init;
+  for (s in 2 : N_seasons) 
+    alpha_log_dev[s] = phi_alpha_log * alpha_log_dev[s - 1]
+                       + z_alpha_log_dev_innovation[s - 1]
+                         * sigma_alpha_log_dev_innovation;
+  alpha_log = alpha_log_base + alpha_log_dev;
   
   league_hfa[1] = league_hfa_init;
   for (s in 2 : N_seasons) 
@@ -163,6 +174,8 @@ transformed parameters {
                                * sigma_weekly_def_innov;
     }
   }
+  for (w in 1 : N_weeks) 
+    team_strength[w] = team_off_strength[w] + team_def_strength[w];
 }
 model {
   // Priors (similar to Poisson file)
@@ -202,13 +215,15 @@ model {
   // Intercept on natural scale; weakly informative around NFL scoring
   alpha_score_raw ~ normal(21, 5);
   
+  // Season-level scoring environment (log scale)
+  alpha_log_dev_init ~ normal(0, 0.2);
+  z_alpha_log_dev_innovation ~ std_normal();
+  sigma_alpha_log_dev_innovation ~ student_t(3, 0, 0.2);
+  phi_alpha_log ~ beta(8, 2);
+  
   // Overdispersion with weakly-informative log-normal prior
   log_phi_home ~ normal(log(12), 0.8);
   log_phi_away ~ normal(log(12), 0.8);
-  
-  // Shared week-level shock prior (non-centered) on log scale
-  z_eps_week ~ std_normal();
-  log_sigma_eps_week ~ normal(log(0.1), 0.8);
   
   // Likelihood (independent NegBinomial-2 given latents)
   {
@@ -216,14 +231,8 @@ model {
                                week_idx, season_idx, hfa, team_off_strength,
                                team_def_strength, team_hfa, alpha_log,
                                N_games);
-    
-    for (g in 1 : N_games) {
-      // Add shared game shock to both home and away log-rates
-      home_score[g] ~ neg_binomial_2_log(eta[g, 1] + eps_week[week_idx[g]],
-                        phi_home);
-      away_score[g] ~ neg_binomial_2_log(eta[g, 2] + eps_week[week_idx[g]],
-                        phi_away);
-    }
+    home_score ~ neg_binomial_2_log(eta[ : , 1], phi_home);
+    away_score ~ neg_binomial_2_log(eta[ : , 2], phi_away);
   }
 }
 generated quantities {
@@ -234,23 +243,25 @@ generated quantities {
   vector[N_teams] filtered_team_def_strength = team_def_strength[last_w];
   vector[N_teams] filtered_team_hfa = team_hfa[last_s];
   real filtered_league_hfa = league_hfa[last_s];
+  vector[N_teams] filtered_team_strength = team_strength[last_w];
   
   // One-step-ahead offense/defense (season-first vs within-season)
   vector[N_teams] predicted_team_off_strength;
   vector[N_teams] predicted_team_def_strength;
   vector[N_teams] predicted_team_hfa;
   real predicted_league_hfa;
+  vector[N_teams] predicted_team_strength;
   
   {
     int next_is_first = is_last_week[last_w];
-    vector[N_teams - 1] z_raw_off;
-    vector[N_teams - 1] z_raw_def;
+    vector[N_teams - 1] off_raw;
+    vector[N_teams - 1] def_raw;
     for (t in 1 : (N_teams - 1)) {
-      z_raw_off[t] = normal_rng(0, 1);
-      z_raw_def[t] = normal_rng(0, 1);
+      off_raw[t] = normal_rng(0, 1);
+      def_raw[t] = normal_rng(0, 1);
     }
-    vector[N_teams] z0_off = sum_to_zero_constrain(z_raw_off);
-    vector[N_teams] z0_def = sum_to_zero_constrain(z_raw_def);
+    vector[N_teams] z0_off = sum_to_zero_constrain(off_raw);
+    vector[N_teams] z0_def = sum_to_zero_constrain(def_raw);
     
     if (next_is_first == 1) {
       predicted_team_off_strength = phi_season_off
@@ -277,22 +288,21 @@ generated quantities {
       predicted_league_hfa = league_hfa[last_s];
       predicted_team_hfa = team_hfa[last_s];
     }
+    
+    predicted_team_strength = predicted_team_off_strength
+                              + predicted_team_def_strength;
   }
+  
+  matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
+                             week_idx, season_idx, hfa, team_off_strength,
+                             team_def_strength, team_hfa, alpha_log, N_games);
   
   // Per-game log-lik (sum of two NegBinomial-2 logs)
   vector[N_games] log_lik;
-  {
-    matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
-                               week_idx, season_idx, hfa, team_off_strength,
-                               team_def_strength, team_hfa, alpha_log,
-                               N_games);
-    
-    for (g in 1 : N_games) 
-      log_lik[g] = neg_binomial_2_log_lpmf(home_score[g] |
-                     eta[g, 1] + eps_week[week_idx[g]], phi_home)
-                   + neg_binomial_2_log_lpmf(away_score[g] |
-                       eta[g, 2] + eps_week[week_idx[g]], phi_away);
-  }
+  for (g in 1 : N_games) 
+    log_lik[g] = neg_binomial_2_log_lpmf(home_score[g] | eta[g, 1], phi_home)
+                 + neg_binomial_2_log_lpmf(away_score[g] | eta[g, 2],
+                     phi_away);
   
   // Integer predictive draws per game and derived outcomes
   // These provide a posterior distribution over scores/result/total/winner
@@ -301,44 +311,19 @@ generated quantities {
   array[N_games] int sim_result;
   array[N_games] int sim_total;
   array[N_games] int sim_home_win;
-  {
-    matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
-                               week_idx, season_idx, hfa, team_off_strength,
-                               team_def_strength, team_hfa, alpha_log,
-                               N_games);
-    for (g in 1 : N_games) {
-      int y_h = neg_binomial_2_log_rng(eta[g, 1] + eps_week[week_idx[g]],
-                  phi_home);
-      int y_a = neg_binomial_2_log_rng(eta[g, 2] + eps_week[week_idx[g]],
-                  phi_away);
-      sim_home_score[g] = y_h;
-      sim_away_score[g] = y_a;
-      sim_result[g] = y_h - y_a;
-      sim_total[g] = y_h + y_a;
-      sim_home_win[g] = (y_h > y_a);
-    }
+  for (g in 1 : N_games) {
+    int y_h = neg_binomial_2_log_rng(eta[g, 1], phi_home);
+    int y_a = neg_binomial_2_log_rng(eta[g, 2], phi_away);
+    sim_home_score[g] = y_h;
+    sim_away_score[g] = y_a;
+    sim_result[g] = y_h - y_a;
+    sim_total[g] = y_h + y_a;
+    sim_home_win[g] = (y_h > y_a);
   }
   
   // Expose per-game log-rates for R-side computation
-  matrix[N_games, 2] eta_home_away;
-  {
-    matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
-                               week_idx, season_idx, hfa, team_off_strength,
-                               team_def_strength, team_hfa, alpha_log,
-                               N_games);
-    eta_home_away = eta;
-  }
+  matrix[N_games, 2] eta_home_away = eta;
   
-  // Expose per-game log-rates including week shock for convenience
-  matrix[N_games, 2] eta_plus_week_shock;
-  {
-    matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
-                               week_idx, season_idx, hfa, team_off_strength,
-                               team_def_strength, team_hfa, alpha_log,
-                               N_games);
-    for (g in 1 : N_games) {
-      eta_plus_week_shock[g, 1] = eta[g, 1] + eps_week[week_idx[g]];
-      eta_plus_week_shock[g, 2] = eta[g, 2] + eps_week[week_idx[g]];
-    }
-  }
+  // Expose per-game log-rates (kept for backward compatibility with prior week-shock output)
+  matrix[N_games, 2] eta_plus_week_shock = eta;
 }
