@@ -17,10 +17,13 @@ library(stringr)
 library(tidyr)
 library(tictoc)
 
+library(ggplot2)
+library(patchwork)
+library(bayesplot)
+
 library(posterior)
 library(tidybayes)
 library(cmdstanr)
-library(bayesplot)
 
 library(KFAS)
 library(bssm)
@@ -129,6 +132,7 @@ historic_hyperparams <- pb_list(
   }) |>
   list_rbind() |>
   arrange(variable, season)
+gc()
 
 ## 3.1 Fit Model ----
 # Globals
@@ -149,7 +153,7 @@ fit_univar_normal <- fit_team_strength_model(
   model = "team_strength_fit",
   stan_data = fit_stan_data,
   seed = fit_seed,
-  init = 0,
+  # init = 0,
   sig_figs = fit_sig_figs,
   chains = fit_chains,
   parallel_chains = fit_parallel,
@@ -225,7 +229,7 @@ fit_bivar_negbinom2 <- mod_nb2$sample(
   data = fit_stan_data,
   # model = "team_strength_bivar_negbinom",
   seed = fit_seed,
-  init = 0,
+  # init = 0.1,
   sig_figs = fit_sig_figs,
   chains = fit_chains,
   parallel_chains = fit_parallel,
@@ -247,6 +251,7 @@ fit_names <- c(
   "bivar_negbinom2"
 )
 
+# Manually update fits that were just run
 fit_list <- list(
   fit_univar_normal,
   fit_univar_student,
@@ -257,10 +262,36 @@ fit_list <- list(
 ) |>
   set_names(fit_names)
 
+# Or, load previously saved fits and modify with newly run fits
+fit_list_load <- fit_names |>
+  map(
+    \(.name) {
+      file <- paste0(
+        "artifacts/model-archive/team_strength/",
+        .name,
+        ".rds"
+      )
+      if (file.exists(file)) readRDS(file) else NULL
+    }
+  ) |>
+  set_names(fit_names)
+
+fit_list <- fit_list_load |>
+  list_modify(univar_normal = fit_univar_normal) |>
+  list_modify(bivar_negbinom2 = fit_bivar_negbinom2)
+rm(fit_list_load)
+
 ## 3.2 Save Fit Outputs ----
+new_fits <- c(
+  "univar_normal",
+  "bivar_negbinom2"
+)
 fit_list |>
-  imap(
+  iwalk(
     \(.fit, .name) {
+      if (!.name %in% new_fits) {
+        return()
+      }
       cat("\n=== Saving Fit Outputs for", .name, "===\n")
       tic()
       .fit$save_object(
@@ -269,21 +300,24 @@ fit_list |>
       toc()
     }
   )
-fit_bivar_negbinom2$save_object(
-  file = paste0(
-    "artifacts/model-archive/team_strength/",
-    "bivar_negbinom2",
-    ".rds"
-  )
-)
+# fit_bivar_negbinom2$save_object(
+#   file = paste0(
+#     "artifacts/model-archive/team_strength/",
+#     "bivar_negbinom2",
+#     ".rds"
+#   )
+# )
 
+## 3.3 Loo ----
 fit_loo <- fit_list |>
+  #keep_at(c("bivar_negbinom", "bivar_negbinom2")) |>
   map(\(.fit) .fit$loo())
+fit_loo |> print()
 fit_loo |> loo::loo_compare()
 fit_loo |> loo::loo_model_weights()
 
 # ============================================================================ #
-# 4. Generate Predictions ----
+# 4. Generate Quantities ----
 # ============================================================================ #
 
 # cat("\n=== Generating Predictions ===\n")
@@ -339,14 +373,19 @@ predict_week <- schedule_idx |>
   unique()
 
 # ============================================================================ #
-# 6. Extract Team Strengths ----
+# 6. Posteriors ----
 # ============================================================================ #
 
-## Draws ----
+## 6.1 Draws & rvars ----
 # Extract team strengths with rvars
 #fit_draws <- fit$draws()
 #fit_rvars <- as_draws_rvars(fit_draws)
-
+fit_draws_list <- fit_list |>
+  map(
+    \(.fit) {
+      .fit$draws()
+    }
+  )
 fit_rvars_list <- fit_list |>
   map(
     \(.fit) {
@@ -358,43 +397,7 @@ fit_rvars_list <- fit_list |>
 # gq_draws <- gq$draws()
 # gq_rvars <- as_draws_rvars(gq_draws)
 
-## Hyperparameters + helpers (apples-to-apples) ----
-extract_hyperparams <- c(
-  # League/Team HFA process
-  "phi_league_hfa",
-  "sigma_league_hfa_innovation",
-  "league_hfa_init",
-  "sigma_team_hfa",
-  # Strength init scales
-  "sigma_team_strength_init",
-  "sigma_team_off_init",
-  "sigma_team_def_init",
-  # Weekly persistence + scales
-  "phi_weekly_team_strength_innovation",
-  "sigma_weekly_team_strength_innovation",
-  "phi_weekly_off",
-  "phi_weekly_def",
-  "sigma_weekly_off_innov",
-  "sigma_weekly_def_innov",
-  # Season persistence + scales
-  "phi_season_team_strength_innovation",
-  "sigma_season_team_strength_innovation",
-  "phi_season_off",
-  "phi_season_def",
-  "sigma_season_off_innov",
-  "sigma_season_def_innov",
-  # Observation/intercepts
-  "nu_obs",
-  "sigma_obs", # univar student
-  "alpha_score_points", # bivar normal
-  "alpha_score", # bivar poisson (log-scale)
-  "alpha_score_raw",
-  "log_phi_home",
-  "log_phi_away",
-  "sigma_alpha_log_dev_innovation",
-  "phi_alpha_log"
-)
-
+## 6.2 Hyperparameters ----
 fit_hyperparams_list <- fit_rvars_list |>
   purrr::map(\(x) {
     keep_at(x, stringr::str_subset(names(x), "phi|sigma|alpha"))
@@ -410,7 +413,42 @@ fit_hyperparams <- fit_hyperparams_list |>
   mutate(model = factor(model, levels = fit_names)) |>
   arrange(model, variable)
 
-## Team Strengths ----
+### Plot hyperparameter summaries ----
+nb2_hyperparams <- fit_hyperparams |>
+  filter(model == "bivar_negbinom2")
+nb2_hyperparams_dup <- nb2_hyperparams |>
+  select(-variable) |>
+  duplicated() |>
+  which() |>
+  map(\(x) nb2_hyperparams |> slice(x)) |>
+  list_rbind()
+
+nb2_hyperparams_list <- fit_hyperparams_list |>
+  pluck("bivar_negbinom2")
+nb2_hyperparams_plots <- nb2_hyperparams_list |>
+  names() |>
+  set_names() |>
+  imap(\(.rvar, .names) {
+    var_len <- nb2_hyperparams_list |> pluck(.rvar) |> length()
+    if (var_len > 1) {
+      nvar <- paste0(.rvar, "[", 1:var_len, "]")
+      mcmc_combo(
+        nb2_hyperparams_list,
+        pars = nvar,
+        combo = c("hist", "trace")
+      )
+    } else {
+      mcmc_combo(
+        nb2_hyperparams_list,
+        pars = .rvar,
+        combo = c("hist", "trace")
+      )
+    }
+  })
+nb2_hyperparams_plots
+
+
+## 6.3 Team Strengths ----
 fit_strengths_list <- fit_rvars_list |>
   purrr::map(\(x) {
     keep_at(x, stringr::str_subset(names(x), "filtered|predicted"))
@@ -483,24 +521,41 @@ fit_strengths <- fit_strengths_list |>
 
 
 possible_exprs <- c(
-  "alpha_log[season]",
+  "last_s",
+  "last_w",
   "filtered_team_strength[team]",
   "filtered_team_off_strength[team]",
   "filtered_team_def_strength[team]",
   "filtered_team_hfa[team]",
   "filtered_league_hfa",
+  "filtered_alpha_log",
   "predicted_team_strength[team]",
   "predicted_team_off_strength[team]",
   "predicted_team_def_strength[team]",
   "predicted_team_hfa[team]",
-  "predicted_league_hfa"
+  "predicted_league_hfa",
+  "predicted_alpha_log",
+  #"eta_home_away[, 1]",
+  #"eta_home_away[, 2]",
+  "phi_home",
+  "phi_away"
+  #"game_pace"
 )
 
 ## Compare Univar vs Bivar ----
+fit_rvars_list2_nb <- fit_rvars_list |>
+  pluck("bivar_negbinom2") |>
+  mutate_variables(
+    filtered_team_strength = filtered_team_off_strength +
+      filtered_team_def_strength,
+    predicted_team_strength = predicted_team_off_strength +
+      predicted_team_def_strength
+  )
+fit_rvars_list <- fit_rvars_list |>
+  list_modify(bivar_negbinom2 = fit_rvars_list2_nb)
 comp_list <- fit_rvars_list |>
-  keep_at(c("univar_normal", "bivar_negbinom", "bivar_negbinom2"))
-comp_list |>
-  map_depth(2, \(x) attr(x, "dims") <- dim(x))
+  keep_at(c("univar_normal", "bivar_negbinom2"))
+
 
 comp_fits <- comp_list |>
   imap(
@@ -516,28 +571,24 @@ comp_fits <- comp_list |>
           !!!rvars_expr
         )
 
-      if (str_detect(.name, "bivar_negbinom")) {
+      if (str_detect(.name, "bivar_negbinom2")) {
         # Global log-scale intercept for expected scoring
         #alpha_log <- .rvars$alpha_log
 
         # Neutral-field expected points vs league-average opponent
         out <- out |>
-          arrange(season) |>
-          mutate(alpha_log = tail(alpha_log, n = 1)) |>
-          filter(season == max(season)) |>
-          select(-season) |>
           mutate(
             filtered_off_points_neutral = exp(
-              alpha_log + filtered_team_off_strength
+              filtered_alpha_log + filtered_team_off_strength
             ),
             filtered_def_points_neutral = exp(
-              alpha_log - filtered_team_def_strength
+              filtered_alpha_log - filtered_team_def_strength
             ),
             predicted_off_points_neutral = exp(
-              alpha_log + predicted_team_off_strength
+              predicted_alpha_log + predicted_team_off_strength
             ),
             predicted_def_points_neutral = exp(
-              alpha_log - predicted_team_def_strength
+              predicted_alpha_log - predicted_team_def_strength
             ),
 
             # Margin (points) comparable to univar_normal
@@ -548,14 +599,22 @@ comp_fits <- comp_list |>
 
             # Convert HFA rvars from log-rate to point increments (home-only effect)
             # Neutral baseline: exp(alpha_log); increment: exp(alpha_log + hfa) - exp(alpha_log)
-            filtered_team_hfa = exp(alpha_log + filtered_team_hfa) -
-              exp(alpha_log),
-            predicted_team_hfa = exp(alpha_log + predicted_team_hfa) -
-              exp(alpha_log),
-            filtered_league_hfa = exp(alpha_log + filtered_league_hfa) -
-              exp(alpha_log),
-            predicted_league_hfa = exp(alpha_log + predicted_league_hfa) -
-              exp(alpha_log)
+            filtered_team_hfa = exp(
+              filtered_alpha_log + filtered_team_hfa
+            ) -
+              exp(filtered_alpha_log),
+            predicted_team_hfa = exp(
+              predicted_alpha_log + predicted_team_hfa
+            ) -
+              exp(predicted_alpha_log),
+            filtered_league_hfa = exp(
+              filtered_alpha_log + filtered_league_hfa
+            ) -
+              exp(filtered_alpha_log),
+            predicted_league_hfa = exp(
+              predicted_alpha_log + predicted_league_hfa
+            ) -
+              exp(predicted_alpha_log)
           )
       }
       out
@@ -573,13 +632,28 @@ comp_fits <- comp_list |>
     #-season
   ) |>
   arrange(team, model)
-comp_fits |>
-  glimpse()
+comp_fits <- list(
+  "univar_normal" = comp_list2,
+  "bivar_negbinom2" = comp_fits2
+) |>
+  list_rbind(names_to = "model") |>
+  mutate(
+    #team = teams[team],
+    model = factor(model, levels = fit_names)
+  ) |>
+  select(
+    model,
+    team,
+    everything()
+    #-season
+  ) |>
+  arrange(team, model)
+
 
 check <- comp_fits |>
   filter(str_detect(as.character(model), "bivar_negbinom")) |>
   mutate(
-    approx_strength_linear = exp(alpha_log) *
+    approx_strength_linear = exp(filtered_alpha_log) *
       (filtered_team_off_strength + filtered_team_def_strength),
     diff = filtered_team_strength - approx_strength_linear
   ) |>
@@ -734,6 +808,59 @@ filtered_results_nb2 <- fit_rvars_list |>
   )
 
 # Extract OOS predictions manually for bivar_negbinom2
+library(posterior)
+library(tidybayes)
+
+# eta: draws x N_games x 2  (as rvar array)
+# phi_home, phi_away: draws (as rvar)
+# You can subsample draws to cut runtime.
+ppd_home_away <- function(eta_home_away, phi_home, phi_away, ndraws = 1000) {
+  # subsample draws
+  eta_sub <- eta_home_away |>
+    posterior::as_draws_array() |>
+    posterior::slice_draws(ndraws = ndraws) |>
+    posterior::as_draws_rvars()
+
+  phi_h <- phi_home |>
+    posterior::as_draws_array() |>
+    posterior::slice_draws(ndraws = ndraws) |>
+    posterior::as_draws_rvars()
+
+  phi_a <- phi_away |>
+    posterior::as_draws_array() |>
+    posterior::slice_draws(ndraws = ndraws) |>
+    posterior::as_draws_rvars()
+
+  eta_h <- eta_sub[,, 1]
+  eta_a <- eta_sub[,, 2]
+
+  home <- rnbinom(
+    length(eta_h),
+    size = as.vector(phi_h),
+    mu = exp(as.vector(eta_h))
+  ) |>
+    array(dim = dim(eta_h)) |>
+    posterior::rvar()
+
+  away <- rnbinom(
+    length(eta_a),
+    size = as.vector(phi_a),
+    mu = exp(as.vector(eta_a))
+  ) |>
+    array(dim = dim(eta_a)) |>
+    posterior::rvar()
+
+  list(home = home, away = away, total = home + away, result = home - away)
+}
+
+nb_new_list <- fit_rvars_list |>
+  pluck("bivar_negbinom2")
+#keep_at(str_extract(pred_exprs, "^\\w+"))
+eta_home_away_draws <- nb_new_list |>
+  pluck("eta_home_away")
+preds_new <- ppd_home_away()
+
+
 pred_cols <- c(
   "alpha_log",
   "log_phi_home",
@@ -748,16 +875,21 @@ pred_cols <- c(
 )
 
 pred_exprs <- c(
-  "alpha_log[season]",
-  "log_phi_home",
-  "log_phi_away",
-  "phi_home",
-  "phi_away",
+  #"predicted_alpha_log",
+  #"log_phi_home",
+  #"log_phi_away",
+  #"phi_home",
+  #"phi_away",
   "predicted_team_off_strength[team]",
   "predicted_team_def_strength[team]",
   "predicted_team_strength[team]",
   "predicted_team_hfa[team]",
-  "predicted_league_hfa"
+  "predicted_league_hfa",
+  "predicted_alpha_log",
+  "phi_home",
+  "phi_away"
+  #"game_pace",
+  #"sigma_game_pace"
 )
 # extract everything before first[
 str_extract(pred_exprs, "^\\w+")
@@ -768,18 +900,16 @@ predicted_results_nb2 <- fit_rvars_list |>
   as_draws_df() |>
   spread_rvars(!!!rlang::parse_exprs(pred_exprs))
 #ungroup() |>
-filter(season == max(season)) |>
-  select(-season)
+# filter(season == max(season)) |>
+#   select(-season)
 
 oos_nb2 <- oos_games |>
   left_join(
     predicted_results_nb2 |>
-      filter(season == max(season)) |>
+      # filter(season == max(season)) |>
       select(
         team,
-        alpha_log,
-        log_phi_home,
-        log_phi_away,
+        predicted_alpha_log,
         phi_home,
         phi_away,
         home_predicted_team_off_strength = predicted_team_off_strength,
@@ -791,8 +921,7 @@ oos_nb2 <- oos_games |>
   ) |>
   left_join(
     predicted_results_nb2 |>
-
-      filter(season == max(season)) |>
+      # filter(season == max(season)) |>
       select(
         team,
         away_predicted_team_off_strength = predicted_team_off_strength,
@@ -802,23 +931,36 @@ oos_nb2 <- oos_games |>
     by = c("away_idx" = "team")
   ) |>
   mutate(
-    eta_home = alpha_log +
+    eta_home = predicted_alpha_log +
       home_predicted_team_off_strength -
       away_predicted_team_def_strength +
-      (hfa * home_predicted_team_hfa),
-    eta_away = alpha_log +
+      (hfa * home_predicted_team_hfa / 2),
+    eta_away = predicted_alpha_log +
       away_predicted_team_off_strength -
-      home_predicted_team_def_strength,
+      home_predicted_team_def_strength -
+      (hfa * home_predicted_team_hfa / 2),
     mu_home = exp(eta_home),
     mu_away = exp(eta_away),
     mu_result = mu_home - mu_away,
     mu_total = mu_home + mu_away
   )
 
-pred_dat <- oos_nb2 |>
-  as_draws_df() |>
-  gather_draws(
-    "mu_home[..]"
+oos_nb3 <- oos_nb2 |>
+  mutate(
+    y_home = rvar_rng(
+      rnbinom,
+      n = nrow(oos_nb2),
+      mu = mu_home,
+      size = phi_home
+    ),
+    y_away = rvar_rng(
+      rnbinom,
+      n = nrow(oos_nb2),
+      mu = mu_away,
+      size = phi_away
+    ),
+    y_result = y_home - y_away,
+    y_total = y_home + y_away
   )
 
 oos_mu_draws <- draws_rvars(
@@ -967,3 +1109,97 @@ m <- as.matrix(draws_xy[, c("sim_away_score", "sim_home_score")])
 
 nb_rvars <- oos_sim |>
   as_draws()
+
+
+oos_mu_draws <- draws_rvars(
+  mu_home = oos_nb2$mu_home,
+  mu_away = oos_nb2$mu_away,
+  mu_result = oos_nb2$mu_result,
+  mu_total = oos_nb2$mu_total,
+  phi_home = oos_nb2$phi_home,
+) |>
+  spread_draws(
+    mu_home[game_idx],
+    mu_away[game_idx],
+    mu_result[game_idx],
+    mu_total[game_idx]
+  ) |>
+  mutate(
+    game_id = oos_games$game_id[game_idx],
+    .after = game_idx
+  )
+
+p <- oos_mu_draws |>
+  ungroup() |>
+  dplyr::filter(game_idx == 1)
+mcmc_hex(
+  p,
+  pars = c("mu_away", "mu_home"),
+  bins = 10
+)
+
+# or, override the fill scale
+oos_mu_draws |>
+  dplyr::ungroup() |>
+  dplyr::filter(game_idx == 1) |>
+  bayesplot::mcmc_hex(pars = c("mu_away", "mu_home")) +
+  ggplot2::scale_fill_gradientn(
+    breaks = scales::breaks_pretty(n = 6)(c(0, NA)), # supply your range here
+    labels = scales::label_number()
+  )
+
+
+oos_nb3 <- oos_nb2 |>
+  mutate(
+    y_home = rvar_rng(
+      rnbinom,
+      n = nrow(oos_nb2),
+      mu = mu_home,
+      size = phi_home
+    ),
+    y_away = rvar_rng(
+      rnbinom,
+      n = nrow(oos_nb2),
+      mu = mu_away,
+      size = phi_away
+    ),
+    y_result = y_home - y_away,
+    y_total = y_home + y_away
+  )
+
+oos_mu_draws <- draws_rvars(
+  mu_home = oos_nb3$mu_home,
+  y_home = oos_nb3$mu_away,
+  mu_away = oos_nb3$mu_away,
+  y_away = oos_nb3$y_away,
+  mu_result = oos_nb3$mu_result,
+  y_result = oos_nb3$y_result,
+  mu_total = oos_nb3$mu_total,
+  y_total = oos_nb3$y_total
+) |>
+  spread_draws(
+    mu_home[game_idx],
+    y_home[game_idx],
+    mu_away[game_idx],
+    y_away[game_idx],
+    mu_result[game_idx],
+    y_result[game_idx],
+    mu_total[game_idx],
+    y_total[game_idx]
+  ) |>
+  mutate(
+    game_id = oos_games$game_id[game_idx],
+    .after = game_idx
+  )
+
+oos_mu_draws |>
+  #dplyr::ungroup() |>
+  #dplyr::filter(game_idx == 1) |>
+  ggplot2::ggplot(ggplot2::aes(mu_result, mu_total)) +
+  ggplot2::stat_bin_hex(bins = 20) +
+  facet_wrap(~game_id) +
+  ggplot2::scale_fill_viridis_c(
+    breaks = scales::breaks_pretty(6),
+    labels = scales::label_number()
+  ) +
+  theme_minimal()

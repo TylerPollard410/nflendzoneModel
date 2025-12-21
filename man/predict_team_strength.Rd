@@ -4,7 +4,7 @@
 \alias{predict_team_strength}
 \title{Predict from team strength model (standalone)}
 \usage{
-predict_team_strength(draws, gq_data, ...)
+predict_team_strength(model = "team_strength_gq", draws, gq_data, ...)
 }
 \arguments{
 \item{draws}{Posterior draws from a previous fit. Can be:

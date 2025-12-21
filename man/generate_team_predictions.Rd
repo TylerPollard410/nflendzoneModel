@@ -4,7 +4,7 @@
 \alias{generate_team_predictions}
 \title{Generate predictions from fitted model}
 \usage{
-generate_team_predictions(fit, gq_data, ...)
+generate_team_predictions(fit, gq_data, model = "team_strength_gq", ...)
 }
 \arguments{
 \item{fit}{A CmdStanMCMC fit object from fit_team_strength_model().}

@@ -4,7 +4,7 @@
 \alias{fit_team_strength_model}
 \title{Fit the NFL team strength model}
 \usage{
-fit_team_strength_model(stan_data, ...)
+fit_team_strength_model(stan_data, model = "team_strength_fit", ...)
 }
 \arguments{
 \item{stan_data}{List of data for Stan model (from prepare_stan_data helpers).}
