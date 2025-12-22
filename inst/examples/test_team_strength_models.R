@@ -18,6 +18,9 @@ library(tidyr)
 library(tictoc)
 
 library(ggplot2)
+library(scales)
+library(hexbin)
+library(ggside)
 library(patchwork)
 library(bayesplot)
 
@@ -52,7 +55,8 @@ github_releases_base_url <- paste0(
 
 # Get teams and seasons
 # Replace with: teams <- nflendzone::load_teams(current = TRUE)$team_abbr
-teams <- nflreadr::load_teams(current = TRUE)$team_abbr
+teams_data <- nflreadr::load_teams(current = TRUE)
+teams <- teams_data$team_abbr
 all_seasons <- 2002:nflreadr::get_current_season()
 current_season <- nflreadr::get_current_season()
 current_week <- nflreadr::get_current_week()
@@ -213,7 +217,7 @@ fit_bivar_negbinom <- fit_team_strength_model(
   stan_data = fit_stan_data,
   model = "team_strength_bivar_negbinom",
   seed = fit_seed,
-  init = 0,
+  # init = 0,
   sig_figs = fit_sig_figs,
   chains = fit_chains,
   parallel_chains = fit_parallel,
@@ -276,14 +280,16 @@ fit_list_load <- fit_names |>
   ) |>
   set_names(fit_names)
 
-fit_list <- fit_list_load |>
-  list_modify(univar_normal = fit_univar_normal) |>
+fit_list <- fit_list |> #fit_list_load |>
+  #list_modify(univar_normal = fit_univar_normal) |>
+  #list_modify(bivar_negbinom = fit_bivar_negbinom) |>
   list_modify(bivar_negbinom2 = fit_bivar_negbinom2)
 rm(fit_list_load)
 
 ## 3.2 Save Fit Outputs ----
 new_fits <- c(
-  "univar_normal",
+  #"univar_normal",
+  #"bivar_negbinom",
   "bivar_negbinom2"
 )
 fit_list |>
@@ -415,16 +421,20 @@ fit_hyperparams <- fit_hyperparams_list |>
 
 ### Plot hyperparameter summaries ----
 nb2_hyperparams <- fit_hyperparams |>
-  filter(model == "bivar_negbinom2")
+  filter(model == "bivar_negbinom") |>
+  arrange(desc(rhat), ess_bulk)
+nb2_hyperparams
+
 nb2_hyperparams_dup <- nb2_hyperparams |>
   select(-variable) |>
   duplicated() |>
   which() |>
   map(\(x) nb2_hyperparams |> slice(x)) |>
   list_rbind()
+nb2_hyperparams_dup
 
 nb2_hyperparams_list <- fit_hyperparams_list |>
-  pluck("bivar_negbinom2")
+  pluck("bivar_negbinom")
 nb2_hyperparams_plots <- nb2_hyperparams_list |>
   names() |>
   set_names() |>
@@ -896,6 +906,12 @@ str_extract(pred_exprs, "^\\w+")
 
 predicted_results_nb2 <- fit_rvars_list |>
   pluck("bivar_negbinom2") |>
+  mutate_variables(
+    filtered_team_strength = filtered_team_off_strength +
+      filtered_team_def_strength,
+    predicted_team_strength = predicted_team_off_strength +
+      predicted_team_def_strength
+  ) |>
   keep_at(str_extract(pred_exprs, "^\\w+")) |>
   as_draws_df() |>
   spread_rvars(!!!rlang::parse_exprs(pred_exprs))
@@ -980,14 +996,6 @@ oos_mu_draws <- draws_rvars(
     .after = game_idx
   )
 
-p <- oos_mu_draws |>
-  ungroup() |>
-  dplyr::filter(game_idx == 1)
-mcmc_hex(
-  p,
-  pars = c("mu_away", "mu_home"),
-  bins = 10
-)
 
 # or, override the fill scale
 oos_mu_draws |>
@@ -1203,3 +1211,328 @@ oos_mu_draws |>
     labels = scales::label_number()
   ) +
   theme_minimal()
+
+oos_mu_draws |>
+  #dplyr::ungroup() |>
+  #dplyr::filter(game_idx == 1) |>
+  ggplot2::ggplot(ggplot2::aes(y_result, y_total)) +
+  ggplot2::stat_bin_hex(bins = 20) +
+  facet_wrap(~game_id) +
+  ggplot2::scale_fill_viridis_c(
+    breaks = scales::breaks_pretty(6),
+    labels = scales::label_number()
+  ) +
+  theme_minimal()
+
+# 8. Probabilistic Predictions ----
+team_colors <- setNames(teams_data$team_color, teams_data$team_abbr)
+team_colors_light <- colorspace::lighten(team_colors, amount = 0.25)
+
+result_fill_values <- c(team_colors_light, Push = "grey70")
+total_fill_values <- c(Under = "steelblue3", Over = "orange2", Push = "grey70")
+
+oos_pred_rvars <- oos_nb3
+
+oos_preds <- oos_pred_rvars |>
+  mutate(
+    home_mu_cover_prob = Pr(mu_result > spread_line),
+    home_y_cover_prob = Pr(y_result > spread_line),
+    away_mu_cover_prob = Pr(mu_result < spread_line),
+    away_y_cover_prob = Pr(y_result < spread_line),
+    mu_cover_prob = pmax(home_mu_cover_prob, away_mu_cover_prob),
+    y_cover_prob = pmax(home_y_cover_prob, away_y_cover_prob),
+    mu_cover_team = case_when(
+      home_mu_cover_prob > away_mu_cover_prob ~ home_team,
+      home_mu_cover_prob < away_mu_cover_prob ~ away_team,
+      TRUE ~ NA_character_
+    ),
+    y_cover_team = case_when(
+      home_y_cover_prob > away_y_cover_prob ~ home_team,
+      home_y_cover_prob < away_y_cover_prob ~ away_team,
+      TRUE ~ NA_character_
+    )
+    #mu_bet_team = ifelse(mu_cover_prob > 0.55, mu_cover_team, NA_character_),
+    #y_bet_team = ifelse(y_cover_prob > 0.55, y_cover_team, NA_character_)
+  ) |>
+  mutate(
+    over_mu_cover_prob = Pr(mu_total > total_line),
+    over_y_cover_prob = Pr(y_total > total_line),
+    under_mu_cover_prob = Pr(mu_total < total_line),
+    under_y_cover_prob = Pr(y_total < total_line),
+    mu_ou_prob = pmax(over_mu_cover_prob, under_mu_cover_prob),
+    y_ou_prob = pmax(over_y_cover_prob, under_y_cover_prob),
+    mu_ou_team = case_when(
+      over_mu_cover_prob > under_mu_cover_prob ~ "Over",
+      over_mu_cover_prob < under_mu_cover_prob ~ "Under",
+      TRUE ~ NA_character_
+    ),
+    y_ou_team = case_when(
+      over_y_cover_prob > under_y_cover_prob ~ "Over",
+      over_y_cover_prob < under_y_cover_prob ~ "Under",
+      TRUE ~ NA_character_
+    )
+    #mu_ou_bet_team = ifelse(mu_ou_prob > 0.55, mu_ou_team, NA_character_),
+    #y_ou_bet_team = ifelse(y_ou_prob > 0.55, y_ou_team, NA_character_)
+  )
+
+oos_pred_draws <- draws_rvars(
+  mu_home = oos_preds$mu_home,
+  y_home = oos_preds$mu_away,
+  mu_away = oos_preds$mu_away,
+  y_away = oos_preds$y_away,
+  mu_result = oos_preds$mu_result,
+  y_result = oos_preds$y_result,
+  mu_total = oos_preds$mu_total,
+  y_total = oos_preds$y_total
+) |>
+  spread_draws(
+    mu_home[game_idx],
+    y_home[game_idx],
+    mu_away[game_idx],
+    y_away[game_idx],
+    mu_result[game_idx],
+    y_result[game_idx],
+    mu_total[game_idx],
+    y_total[game_idx]
+  ) |>
+  mutate(
+    game_id = oos_games$game_id[game_idx],
+    .after = game_idx
+  )
+
+# mu_result vs mu_total as proportion
+oos_pred_draws |>
+  ggplot(ggplot2::aes(mu_result, mu_total)) +
+  stat_bin_hex(
+    bins = 20,
+    aes(fill = after_stat(count / sum(count)))
+  ) +
+  facet_wrap(~game_id) +
+  scale_fill_viridis_c(
+    #limits = c(0, 1),
+    labels = scales::label_percent(accuracy = 1),
+    name = "Proportion"
+  ) +
+  theme_minimal()
+
+# y_result vs y_total as proportion
+oos_pred_draws |>
+  ggplot(ggplot2::aes(mu_result, mu_total)) +
+  stat_bin_hex(
+    bins = 20,
+    #aes(fill = after_stat(count / sum(count)))
+  ) +
+  facet_wrap(~game_id) +
+  ggplot2::scale_fill_viridis_c(
+    breaks = scales::breaks_pretty(6),
+    labels = scales::label_number()
+  ) +
+  theme_bw()
+
+# install.packages("ggside") # if needed
+
+# Hexbin of mu_result vs mu_total with side histograms (counts)
+oos_pred_draws |>
+  ggplot2::ggplot(ggplot2::aes(mu_result, mu_total)) +
+  ggplot2::stat_bin_hex(bins = 20) +
+  ggside::geom_xsidehistogram(bins = 30, fill = "grey45", alpha = 0.7) +
+  ggside::geom_ysidehistogram(bins = 30, fill = "grey45", alpha = 0.7) +
+  facet_wrap(~game_id) +
+  ggplot2::scale_fill_viridis_c(
+    breaks = scales::breaks_pretty(6),
+    labels = scales::label_number(),
+    name = "Count"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(ggside.panel.scale = 0.25)
+
+## 8.1 One Game Test ----
+game_id_sel <- "2025_16_NE_BAL"
+
+# 1) Get rvar row for the game (to use Pr) and the per-draw data (to plot)
+one_game_rvars <- oos_pred_rvars |>
+  filter(game_id == game_id_sel)
+
+one_game_draws <- oos_pred_draws |>
+  filter(game_id == game_id_sel) # has per-draw mu_* values for plotting
+
+# 2) Quadrant + marginal probabilities using Pr() on rvars
+probs <- one_game_rvars |>
+  summarise(
+    p_home_over = Pr(mu_result > spread_line & mu_total > total_line),
+    p_home_under = Pr(mu_result > spread_line & mu_total < total_line),
+    p_away_over = Pr(mu_result < spread_line & mu_total > total_line),
+    p_away_under = Pr(mu_result < spread_line & mu_total < total_line),
+    p_home_cover = Pr(mu_result > spread_line),
+    p_away_cover = Pr(mu_result < spread_line),
+    p_over = Pr(mu_total > total_line),
+    p_under = Pr(mu_total < total_line),
+    spread_line = dplyr::first(spread_line),
+    total_line = dplyr::first(total_line),
+    home_team = dplyr::first(home_team),
+    away_team = dplyr::first(away_team)
+  )
+
+# 3) Label positions inside the main panel
+xr <- range(one_game_draws$mu_result, na.rm = TRUE)
+yr <- range(one_game_draws$mu_total, na.rm = TRUE)
+x_off <- diff(xr) * 0.5
+y_off <- diff(yr) * 0.5
+
+quad_labels <- tibble::tibble(
+  x = probs$spread_line + c(x_off, x_off, -x_off, -x_off),
+  y = probs$total_line + c(y_off, -y_off, y_off, -y_off),
+  label = c(
+    paste0(
+      probs$home_team,
+      " cover & Over:  ",
+      percent(probs$p_home_over, 0.1)
+    ),
+    paste0(
+      probs$home_team,
+      " cover & Under: ",
+      percent(probs$p_home_under, 0.1)
+    ),
+    paste0(
+      probs$away_team,
+      " cover & Over:  ",
+      percent(probs$p_away_over, 0.1)
+    ),
+    paste0(
+      probs$away_team,
+      " cover & Under: ",
+      percent(probs$p_away_under, 0.1)
+    )
+  )
+)
+
+# 4) (Optional) side-panel text labels; if your ggside lacks sidetext geoms, remove these two layers
+xside_labels <- tibble::tibble(
+  x = probs$spread_line + c(-x_off, x_off),
+  y = Inf,
+  label = c(
+    paste0(probs$away_team, " cover: ", percent(probs$p_away_cover, 0.1)),
+    paste0(probs$home_team, " cover: ", percent(probs$p_home_cover, 0.1))
+  )
+)
+yside_labels <- tibble::tibble(
+  y = probs$total_line + c(-y_off, y_off),
+  x = Inf,
+  label = c(
+    paste0("Under: ", percent(probs$p_under, 0.1)),
+    paste0("Over:  ", percent(probs$p_over, 0.1))
+  )
+)
+
+# 5) Plot: hexbin counts, decision lines, in-panel quadrant labels, side marginals
+one_game_draws |>
+  mutate(
+    home_team = probs$home_team,
+    away_team = probs$away_team,
+    spread_line = probs$spread_line,
+    total_line = probs$total_line,
+    .after = game_id
+  ) |>
+  mutate(
+    result_bin = case_when(
+      mu_result > spread_line ~ home_team,
+      mu_result < spread_line ~ away_team,
+      TRUE ~ "Push"
+    ),
+    total_bin = case_when(
+      mu_total > total_line ~ "Over",
+      mu_total < total_line ~ "Under",
+      TRUE ~ "Push"
+    )
+  ) |>
+  # mutate(
+  #   result_bin = factor(
+  #     result_bin,
+  #     levels = c(probs$away_team, "Push", probs$home_team)
+  #   ),
+  #   total_bin = factor(total_bin, levels = c("Under", "Push", "Over"))
+  # ) |>
+  ggplot(aes(mu_result, mu_total)) +
+  # main joint hex counts
+  stat_bin_hex(bins = 20) +
+  scale_fill_viridis_c(
+    breaks = breaks_pretty(6),
+    labels = label_number(),
+    name = "Count"
+  ) +
+  # decision lines
+  geom_vline(
+    data = probs,
+    aes(xintercept = spread_line),
+    linetype = 2,
+    color = "red"
+  ) +
+  geom_hline(
+    data = probs,
+    aes(yintercept = total_line),
+    linetype = 2,
+    color = "red"
+  ) +
+  # quadrant probabilities (in-panel)
+  geom_label(
+    data = quad_labels,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  # side marginals (counts)
+  new_scale_fill() +
+  ggside::geom_xsidehistogram(
+    aes(y = after_stat(count), fill = result_bin),
+    bins = 30,
+    boundary = probs$spread_line,
+    alpha = 0.7
+  ) +
+  scale_fill_manual(
+    values = result_fill_values
+    #breaks = c(probs$away_team, "Push", probs$home_team),
+    #name = "Result bins"
+    #drop = FALSE
+  ) +
+  new_scale_fill() +
+  ggside::geom_ysidehistogram(
+    aes(x = after_stat(count), fill = total_bin),
+    bins = 30,
+    boundary = probs$total_line,
+    alpha = 0.7
+  ) +
+  # separate side-panel fill scales from main fill
+  scale_fill_manual(
+    values = total_fill_values
+    #breaks = c(probs$away_team, "Push", probs$home_team),
+    #name = "Result bins"
+    #drop = FALSE
+  ) +
+  # ggside::scale_yfill_manual(
+  #   values = total_fill_values,
+  #   breaks = c("Under", "Push", "Over"),
+  #   name = "Total bins",
+  #   drop = FALSE
+  # ) +
+  # side-panel probability labels (comment out if unavailable in your ggside)
+  ggside::geom_xsidetext(
+    data = xside_labels,
+    aes(x = x, y = Inf, label = label),
+    inherit.aes = FALSE,
+    vjust = 1.1,
+    size = 3
+  ) +
+  ggside::geom_ysidetext(
+    data = yside_labels,
+    aes(x = Inf, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 1.1,
+    size = 3
+  ) +
+  facet_wrap(~game_id) +
+  theme_minimal() +
+  theme_ggside_classic() +
+  theme(
+    ggside.panel.scale = 0.25,
+    legend.position = "none"
+  )

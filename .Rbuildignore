@@ -10,3 +10,12 @@
 ^\.github$
 ^\.DS_Store$
 ^NOTICE$
+^artifacts$
+^conversation-export\.md$
+^\.Rproj\.user$
+^.*\.Rproj$
+^\.Rhistory$
+^\.RData$
+^\.Renviron$
+^\.vscode$
+^\.idea$

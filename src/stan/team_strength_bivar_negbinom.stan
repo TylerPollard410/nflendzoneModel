@@ -300,9 +300,9 @@ generated quantities {
   real filtered_alpha_log = alpha_log[last_s];
   
   // Expose scales needed for R-side OOS
-  real phi_home_out = phi_home;
-  real phi_away_out = phi_away;
-  real sigma_game_pace_out = sigma_game_pace;
+  // real phi_home_out = phi_home;
+  // real phi_away_out = phi_away;
+  // real sigma_game_pace_out = sigma_game_pace;
   
   // One-step-ahead state draws (for R-side forecasting)
   vector[N_teams] predicted_team_off_strength;
@@ -361,26 +361,39 @@ generated quantities {
   }
   
   // In-sample predictors (for log_lik + optional PPC)
-  matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
-                             week_idx, season_idx, hfa, team_off_strength,
-                             team_def_strength, team_hfa, alpha_log, N_games);
-  eta[ : , 1] += game_pace;
-  eta[ : , 2] += game_pace;
+  // matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
+  //                            week_idx, season_idx, hfa, team_off_strength,
+  //                            team_def_strength, team_hfa, alpha_log, N_games);
+  // eta[ : , 1] += game_pace;
+  // eta[ : , 2] += game_pace;
   
   // Per-game log-lik (sum of two NB2 logs)
   vector[N_games] log_lik;
-  for (g in 1 : N_games) 
-    log_lik[g] = neg_binomial_2_log_lpmf(home_score[g] | eta[g, 1], phi_home)
-                 + neg_binomial_2_log_lpmf(away_score[g] | eta[g, 2],
-                     phi_away);
-  
+  {
+    // In-sample predictors (for log_lik + optional PPC)
+    matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
+                               week_idx, season_idx, hfa, team_off_strength,
+                               team_def_strength, team_hfa, alpha_log,
+                               N_games);
+    eta[ : , 1] += game_pace;
+    eta[ : , 2] += game_pace;
+    
+    for (g in 1 : N_games) 
+      log_lik[g] = neg_binomial_2_log_lpmf(home_score[g] | eta[g, 1],
+                     phi_home)
+                   + neg_binomial_2_log_lpmf(away_score[g] | eta[g, 2],
+                       phi_away);
+  }
+  // for (g in 1 : N_games) 
+  //   log_lik[g] = neg_binomial_2_log_lpmf(home_score[g] | eta[g, 1], phi_home)
+  //                + neg_binomial_2_log_lpmf(away_score[g] | eta[g, 2],
+  //                    phi_away);
   // Optional in-sample posterior predictive draws (same as your previous output family)
   // array[N_games] int sim_home_score;
   // array[N_games] int sim_away_score;
   // array[N_games] int sim_result;
   // array[N_games] int sim_total;
   // array[N_games] int sim_home_win;
-  
   // for (g in 1 : N_games) {
   //   int y_h = neg_binomial_2_log_rng(eta[g, 1], phi_home);
   //   int y_a = neg_binomial_2_log_rng(eta[g, 2], phi_away);
@@ -390,7 +403,6 @@ generated quantities {
   //   sim_total[g] = y_h + y_a;
   //   sim_home_win[g] = (y_h > y_a);
   // }
-  
   // Expose per-game log-rates once (no redundant alias)
-  matrix[N_games, 2] eta_home_away = eta;
+  // matrix[N_games, 2] eta_home_away = eta;
 }
