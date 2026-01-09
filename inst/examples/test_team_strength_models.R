@@ -21,6 +21,7 @@ library(ggplot2)
 library(scales)
 library(hexbin)
 library(ggside)
+library(ggnewscale)
 library(patchwork)
 library(bayesplot)
 
@@ -53,6 +54,30 @@ github_releases_base_url <- paste0(
   "/releases/download/"
 )
 
+# github_release_url <- function(tag, file = "rds") {
+#   paste0(
+#     "https://github.com/TylerPollard410/nflendzoneData/releases/download/",
+#     tag,
+#     "/",
+#     tag,
+#     ".",
+#     file
+#   )
+# }
+
+# github_release_url("season_standings", "rds")
+
+# system.time(
+#   t <- load_from_url(
+#     url = github_release_url("team_features", "parquet"),
+#     seasons = 2025
+#   ) |>
+#     filter(SRS > 5) |>
+#     group_by(team) |>
+#     summarise(mean_SRS = mean(SRS, na.rm = TRUE))
+# )
+# object.size(t)
+
 # Get teams and seasons
 # Replace with: teams <- nflendzone::load_teams(current = TRUE)$team_abbr
 teams_data <- nflreadr::load_teams(current = TRUE)
@@ -67,7 +92,7 @@ current_week <- nflreadr::get_current_week()
 # Load game data
 # game_data_full <- nflendzone::load_game_data(seasons = all_seasons)
 game_data_full <- nflendzone::load_game_data(
-  seasons = (current_season - 5):current_season
+  seasons = (current_season - 4):current_season
 )
 
 # ============================================================================ #
@@ -148,7 +173,7 @@ fit_parallel = parallel::detectCores()
 fit_warm = 1000
 fit_samps = 1000
 fit_thin = 1
-fit_adapt_delta = 0.90
+fit_adapt_delta = 0.95
 fit_max_treedepth = 10
 
 cat("\n=== Fitting Model ===\n")
@@ -229,11 +254,11 @@ fit_bivar_negbinom <- fit_team_strength_model(
 )
 
 mod_nb2 <- cmdstan_model("src/stan/team_strength_bivar_negbinom.stan")
-fit_bivar_negbinom2 <- mod_nb2$sample(
+fit_bivar_negbinom <- mod_nb2$sample(
   data = fit_stan_data,
   # model = "team_strength_bivar_negbinom",
   seed = fit_seed,
-  # init = 0.1,
+  #init = 0,
   sig_figs = fit_sig_figs,
   chains = fit_chains,
   parallel_chains = fit_parallel,
@@ -243,24 +268,24 @@ fit_bivar_negbinom2 <- mod_nb2$sample(
   adapt_delta = fit_adapt_delta,
   max_treedepth = fit_max_treedepth
 )
-fit_bivar_negbinom2$diagnostic_summary()
-fit_bivar_negbinom2$cmdstan_diagnose()
+fit_bivar_negbinom$diagnostic_summary()
+fit_bivar_negbinom$cmdstan_diagnose()
 
 fit_names <- c(
-  "univar_normal",
-  "univar_student",
-  "bivar_normal",
-  "bivar_poisson",
+  #"univar_normal",
+  #"univar_student",
+  #"bivar_normal",
+  #"bivar_poisson",
   "bivar_negbinom",
   "bivar_negbinom2"
 )
 
 # Manually update fits that were just run
 fit_list <- list(
-  fit_univar_normal,
-  fit_univar_student,
-  fit_bivar_normal,
-  fit_bivar_poisson,
+  #fit_univar_normal,
+  #fit_univar_student,
+  #fit_bivar_normal,
+  #fit_bivar_poisson,
   fit_bivar_negbinom,
   fit_bivar_negbinom2
 ) |>
@@ -280,7 +305,7 @@ fit_list_load <- fit_names |>
   ) |>
   set_names(fit_names)
 
-fit_list <- fit_list |> #fit_list_load |>
+fit_list <- fit_list_load |> #fit_list_load |>
   #list_modify(univar_normal = fit_univar_normal) |>
   #list_modify(bivar_negbinom = fit_bivar_negbinom) |>
   list_modify(bivar_negbinom2 = fit_bivar_negbinom2)
@@ -306,13 +331,13 @@ fit_list |>
       toc()
     }
   )
-# fit_bivar_negbinom2$save_object(
-#   file = paste0(
-#     "artifacts/model-archive/team_strength/",
-#     "bivar_negbinom2",
-#     ".rds"
-#   )
-# )
+fit_bivar_negbinom$save_object(
+  file = paste0(
+    "artifacts/model-archive/team_strength/",
+    "bivar_negbinom",
+    ".rds"
+  )
+)
 
 ## 3.3 Loo ----
 fit_loo <- fit_list |>
@@ -403,7 +428,177 @@ fit_rvars_list <- fit_list |>
 # gq_draws <- gq$draws()
 # gq_rvars <- as_draws_rvars(gq_draws)
 
+### 6.1.1 Negative Binomial Draws ----
+nb_draws <- fit_bivar_negbinom$draws()
+nb_rvars2 <- as_draws_rvars(nb_draws)
+
+week_vars <- c(
+  "phi_home",
+  "phi_away",
+  "filtered_alpha_log",
+  "filtered_team_off_strength[team]",
+  "filtered_team_def_strength[team]",
+  "filtered_team_hfa[team]",
+  "filtered_league_hfa",
+  "predicted_alpha_log",
+  "predicted_team_off_strength[team]",
+  "predicted_team_def_strength[team]",
+  "predicted_team_hfa[team]",
+  "predicted_league_hfa"
+)
+
+nb_sum <- fit_bivar_negbinom$summary(
+  variables = str_extract(week_vars, "^\\w+")
+) |>
+  mutate(team = str_extract(variable, "[:digit:]+"), .before = 1) |>
+  mutate(
+    team = teams[as.numeric(team)],
+    filtered_season = filter_season,
+    filtered_week = filter_week,
+    predicted_season = predict_season,
+    predicted_week = predict_week,
+    .before = 1
+  )
+
+# piggyback::pb_release_create(
+#   repo = github_data_repo,
+#   tag = "team_strength_negbinom_summary",
+#   name = "team_strength_negbinom_summary",
+#   body = paste("Data release for", "team_strength_negbinom_summary")
+# )
+arrow::write_feather(
+  nb_sum,
+  paste0(
+    "artifacts/model-reports/team_strength/nb_sum_",
+    filter_season,
+    ".arrow"
+  )
+)
+pb_write(
+  x = nb_sum,
+  file = paste0(
+    "team_strength_negbinom_summary",
+    "_",
+    filter_season,
+    ".parquet"
+  ),
+  #write_function = arrow::write_feather,
+  repo = github_data_repo,
+  tag = "team_strength_negbinom_summary"
+)
+
+nb_rvars <-
+  # fit_rvars_list |>
+  # pluck("bivar_negbinom2") |>
+  nb_rvars2 |>
+  spread_rvars(
+    phi_home,
+    phi_away,
+    filtered_alpha_log,
+    filtered_team_off_strength[team],
+    filtered_team_def_strength[team],
+    filtered_team_hfa[team],
+    filtered_league_hfa,
+    predicted_alpha_log,
+    predicted_team_off_strength[team],
+    predicted_team_def_strength[team],
+    predicted_team_hfa[team],
+    predicted_league_hfa
+  ) |>
+  mutate(
+    team = teams[team],
+    filtered_season = filter_season,
+    filtered_week = filter_week,
+    predicted_season = predict_season,
+    predicted_week = predict_week,
+    .before = 1
+  ) |>
+  relocate(team, .after = predicted_season)
+
+nb_rvars_un <- nb_rvars |>
+  mutate(team = as.integer(factor(team))) |>
+  select(
+    -c(filtered_season, filtered_week, predicted_season, predicted_week)
+  ) |>
+  unnest_rvars()
+
+nb_draws_un <- nb_rvars_un |>
+  unspread_draws(!!!rlang::parse_exprs(week_vars))
+
+nb_draws_un_sum <-
+  #nb_draws_un |>
+  nb_rvars_un |>
+  #spread_draws(!!!rlang::parse_exprs(week_vars)) |>
+  summarise_draws() |>
+  mutate(
+    team = ifelse(
+      variable %in% str_subset(week_vars, "\\[", negate = TRUE),
+      NA,
+      team
+    )
+  ) |>
+  distinct() |>
+  mutate(
+    team = teams[team],
+    filtered_season = filter_season,
+    filtered_week = filter_week,
+    predicted_season = predict_season,
+    predicted_week = predict_week,
+    .before = 1
+  )
+
+nb_draws_un_sum1 <- nb_rvars |>
+  summarise_draws()
+
+nb_draws_un_sum2 <- nb_draws_un_sum |>
+  ungroup() |>
+  mutate(
+    rvariable = rvar_rng(
+      rnorm,
+      n = nrow(nb_draws_un_sum),
+      mean = mean,
+      sd = sd,
+      ndraws = 4000
+    ),
+    .after = variable
+  ) |>
+  mutate(team = as.numeric(factor(team))) |>
+  mutate(
+    variable = ifelse(!is.na(team), paste0(variable, "[", team, "]"), variable)
+  ) |>
+  select(variable, rvariable) |>
+  pivot_wider(names_from = variable, values_from = rvariable) |>
+  unnest_rvars() |>
+  spread_rvars(!!!rlang::parse_exprs(week_vars)) |>
+  mutate(
+    team = teams[team]
+  ) |>
+  relocate(team, .before = 1)
+
+
+nb_draws_un |>
+  mcmc_dens(regex_pars = "predicted_team_off_strength")
+
+nb_draws_un |>
+  mcmc_dens(regex_pars = 'filtered_team_off_strength')
+
+nb_draws_un_df <- nb_draws_un |>
+  as_draws()
+
+nb_rvars_un <- nb_draws_un |>
+  nest_rvars()
+
+dir.create(
+  "artifacts/model-reports/team_strength",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+saveRDS(nb_rvars, "artifacts/model-reports/team_strength/nb_rvars.rds")
+
 ## 6.2 Hyperparameters ----
+fit_rvars_list <- list(
+  "bivar_negbinom" = nb_rvars2
+)
 fit_hyperparams_list <- fit_rvars_list |>
   purrr::map(\(x) {
     keep_at(x, stringr::str_subset(names(x), "phi|sigma|alpha"))
@@ -660,215 +855,11 @@ comp_fits <- list(
   arrange(team, model)
 
 
-check <- comp_fits |>
-  filter(str_detect(as.character(model), "bivar_negbinom")) |>
-  mutate(
-    approx_strength_linear = exp(filtered_alpha_log) *
-      (filtered_team_off_strength + filtered_team_def_strength),
-    diff = filtered_team_strength - approx_strength_linear
-  ) |>
-  group_by(model, team) |>
-  summarise(
-    approx_mae = mean(abs(diff)),
-    approx_mean = mean(diff)
-  )
-
-check |>
-  arrange(desc(approx_mae)) |>
-  head(10)
-
-
-library(dplyr)
-library(tidyr)
-library(posterior)
-library(ggplot2)
-
-cmp <- comp_fits |>
-  filter(model %in% c("univar_normal", "bivar_negbinom2")) |>
-  transmute(
-    model,
-    team,
-    filt_mean = mean(filtered_team_strength),
-    filt_sd = sd(filtered_team_strength),
-    pred_mean = mean(predicted_team_strength),
-    pred_sd = sd(predicted_team_strength)
-  ) |>
-  pivot_wider(
-    names_from = model,
-    values_from = c(filt_mean, filt_sd, pred_mean, pred_sd)
-  )
-cmp
-
-# ---- Shrinkage diagnostics ----
-fit_filt <- lm(filt_mean_bivar_negbinom2 ~ filt_mean_univar_normal, data = cmp)
-fit_pred <- lm(pred_mean_bivar_negbinom2 ~ pred_mean_univar_normal, data = cmp)
-
-cat(
-  "\nFiltered: cor =",
-  cor(cmp$filt_mean_univar_normal, cmp$filt_mean_bivar_negbinom2),
-  "\n"
-)
-print(summary(fit_filt)$coef)
-
-cat(
-  "\nPredicted: cor =",
-  cor(cmp$pred_mean_univar_normal, cmp$pred_mean_bivar_negbinom2),
-  "\n"
-)
-print(summary(fit_pred)$coef)
-
-# biggest disagreements
-cmp |>
-  mutate(
-    filt_abs_diff = abs(filt_mean_bivar_negbinom2 - filt_mean_univar_normal)
-  ) |>
-  arrange(desc(filt_abs_diff)) |>
-  select(
-    team,
-    filt_mean_univar_normal,
-    filt_mean_bivar_negbinom2,
-    filt_abs_diff
-  ) |>
-  head(10) |>
-  print(n = 10)
-
-dir.create("artifacts/compare", recursive = TRUE, showWarnings = FALSE)
-
-# ---- Plot 1: filtered means scatter (univar vs negbinom2) ----
-p1 <- ggplot(cmp, aes(filt_mean_univar_normal, filt_mean_bivar_negbinom2)) +
-  geom_hline(yintercept = 0, color = "grey85") +
-  geom_vline(xintercept = 0, color = "grey85") +
-  geom_abline(intercept = 0, slope = 1, linetype = 2, color = "red") +
-  geom_point() +
-  geom_smooth(method = "lm", se = FALSE, color = "black") +
-  geom_text(aes(label = team), check_overlap = TRUE, nudge_y = 0.1, size = 3) +
-  labs(
-    title = "Filtered team strength: univar vs negbinom2",
-    x = "Univar filtered strength (posterior mean)",
-    y = "Negbinom2 filtered strength (posterior mean)"
-  ) +
-  theme_minimal()
-p1
-ggsave(
-  "artifacts/compare/strength_filtered_scatter.png",
-  p1,
-  width = 9,
-  height = 7,
-  dpi = 150
-)
-
-# ---- Plot 2: predicted means scatter ----
-p2 <- ggplot(cmp, aes(pred_mean_univar_normal, pred_mean_bivar_negbinom2)) +
-  geom_hline(yintercept = 0, color = "grey85") +
-  geom_vline(xintercept = 0, color = "grey85") +
-  geom_abline(intercept = 0, slope = 1, linetype = 2, color = "red") +
-  geom_point() +
-  geom_smooth(method = "lm", se = FALSE, color = "black") +
-  geom_text(aes(label = team), check_overlap = TRUE, nudge_y = 0.1, size = 3) +
-  labs(
-    title = "Predicted team strength: univar vs negbinom2",
-    x = "Univar predicted strength (posterior mean)",
-    y = "Negbinom2 predicted strength (posterior mean)"
-  ) +
-  theme_minimal()
-p2
-ggsave(
-  "artifacts/compare/strength_predicted_scatter.png",
-  p2,
-  width = 9,
-  height = 7,
-  dpi = 150
-)
-
-# ---- Plot 3: “shrinkage” (difference vs univar) ----
-p3 <- ggplot(
-  cmp,
-  aes(
-    filt_mean_univar_normal,
-    filt_mean_bivar_negbinom2 - filt_mean_univar_normal
-  )
-) +
-  geom_hline(yintercept = 0, linetype = 2, color = "red") +
-  geom_point() +
-  geom_smooth(method = "lm", se = FALSE, color = "black") +
-  geom_text(aes(label = team), check_overlap = TRUE, nudge_y = 0.1, size = 3) +
-  labs(
-    title = "Filtered shrinkage: (negbinom2 - univar) vs univar",
-    x = "Univar filtered strength (posterior mean)",
-    y = "Difference in means"
-  ) +
-  theme_minimal()
-p3
-ggsave(
-  "artifacts/compare/strength_filtered_shrinkage.png",
-  p3,
-  width = 9,
-  height = 7,
-  dpi = 150
-)
-
-# 7. Prediction Evaluation ----
-filtered_results_nb2 <- fit_rvars_list |>
-  pluck("bivar_negbinom2") |>
-  keep_at(\(x) stringr::str_subset(x, "sim")) |>
-  spread_rvars(
-    c(sim_home_score, sim_away_score, sim_result, sim_total, sim_home_win)[
-      game_id
-    ]
-  )
-
-# Extract OOS predictions manually for bivar_negbinom2
-library(posterior)
-library(tidybayes)
-
-# eta: draws x N_games x 2  (as rvar array)
-# phi_home, phi_away: draws (as rvar)
-# You can subsample draws to cut runtime.
-ppd_home_away <- function(eta_home_away, phi_home, phi_away, ndraws = 1000) {
-  # subsample draws
-  eta_sub <- eta_home_away |>
-    posterior::as_draws_array() |>
-    posterior::slice_draws(ndraws = ndraws) |>
-    posterior::as_draws_rvars()
-
-  phi_h <- phi_home |>
-    posterior::as_draws_array() |>
-    posterior::slice_draws(ndraws = ndraws) |>
-    posterior::as_draws_rvars()
-
-  phi_a <- phi_away |>
-    posterior::as_draws_array() |>
-    posterior::slice_draws(ndraws = ndraws) |>
-    posterior::as_draws_rvars()
-
-  eta_h <- eta_sub[,, 1]
-  eta_a <- eta_sub[,, 2]
-
-  home <- rnbinom(
-    length(eta_h),
-    size = as.vector(phi_h),
-    mu = exp(as.vector(eta_h))
-  ) |>
-    array(dim = dim(eta_h)) |>
-    posterior::rvar()
-
-  away <- rnbinom(
-    length(eta_a),
-    size = as.vector(phi_a),
-    mu = exp(as.vector(eta_a))
-  ) |>
-    array(dim = dim(eta_a)) |>
-    posterior::rvar()
-
-  list(home = home, away = away, total = home + away, result = home - away)
-}
-
 nb_new_list <- fit_rvars_list |>
   pluck("bivar_negbinom2")
 #keep_at(str_extract(pred_exprs, "^\\w+"))
 eta_home_away_draws <- nb_new_list |>
   pluck("eta_home_away")
-preds_new <- ppd_home_away()
 
 
 pred_cols <- c(
@@ -906,12 +897,12 @@ str_extract(pred_exprs, "^\\w+")
 
 predicted_results_nb2 <- fit_rvars_list |>
   pluck("bivar_negbinom2") |>
-  mutate_variables(
-    filtered_team_strength = filtered_team_off_strength +
-      filtered_team_def_strength,
-    predicted_team_strength = predicted_team_off_strength +
-      predicted_team_def_strength
-  ) |>
+  # mutate_variables(
+  #   filtered_team_strength = filtered_team_off_strength +
+  #     filtered_team_def_strength,
+  #   predicted_team_strength = predicted_team_off_strength +
+  #     predicted_team_def_strength
+  # ) |>
   keep_at(str_extract(pred_exprs, "^\\w+")) |>
   as_draws_df() |>
   spread_rvars(!!!rlang::parse_exprs(pred_exprs))
@@ -960,202 +951,6 @@ oos_nb2 <- oos_games |>
     mu_result = mu_home - mu_away,
     mu_total = mu_home + mu_away
   )
-
-oos_nb3 <- oos_nb2 |>
-  mutate(
-    y_home = rvar_rng(
-      rnbinom,
-      n = nrow(oos_nb2),
-      mu = mu_home,
-      size = phi_home
-    ),
-    y_away = rvar_rng(
-      rnbinom,
-      n = nrow(oos_nb2),
-      mu = mu_away,
-      size = phi_away
-    ),
-    y_result = y_home - y_away,
-    y_total = y_home + y_away
-  )
-
-oos_mu_draws <- draws_rvars(
-  mu_home = oos_nb2$mu_home,
-  mu_away = oos_nb2$mu_away,
-  mu_result = oos_nb2$mu_result,
-  mu_total = oos_nb2$mu_total
-) |>
-  spread_draws(
-    mu_home[game_idx],
-    mu_away[game_idx],
-    mu_result[game_idx],
-    mu_total[game_idx]
-  ) |>
-  mutate(
-    game_id = oos_games$game_id[game_idx],
-    .after = game_idx
-  )
-
-
-# or, override the fill scale
-oos_mu_draws |>
-  dplyr::ungroup() |>
-  dplyr::filter(game_idx == 1) |>
-  bayesplot::mcmc_hex(pars = c("mu_away", "mu_home")) +
-  ggplot2::scale_fill_gradientn(
-    breaks = scales::breaks_pretty(n = 6)(c(0, NA)), # supply your range here
-    labels = scales::label_number()
-  )
-
-# simplest: avoid mcmc_hex; use ggplot2 hexbin directly
-oos_mu_draws |>
-  #dplyr::ungroup() |>
-  dplyr::filter(game_idx == 1) |>
-  ggplot2::ggplot(ggplot2::aes(mu_away, mu_home)) +
-  ggplot2::stat_bin_hex(bins = 30) +
-  ggplot2::scale_fill_viridis_c(
-    breaks = scales::breaks_pretty(6),
-    labels = scales::label_number()
-  ) +
-  theme_minimal()
-
-oos_mu_draws |>
-  #dplyr::ungroup() |>
-  #dplyr::filter(game_idx == 1) |>
-  ggplot2::ggplot(ggplot2::aes(mu_result, mu_total)) +
-  ggplot2::stat_bin_hex(bins = 20) +
-  facet_wrap(~game_id) +
-  ggplot2::scale_fill_viridis_c(
-    breaks = scales::breaks_pretty(6),
-    labels = scales::label_number()
-  ) +
-  theme_minimal()
-
-library(dplyr)
-library(tidybayes)
-library(posterior)
-
-rv <- fit_rvars_list$bivar_negbinom2
-
-# keep your current "last alpha_log" approach
-alpha_last <- rv |>
-  spread_rvars(alpha_log[season]) |>
-  arrange(season) |>
-  slice_tail(n = 1) |>
-  pull(alpha_log)
-
-phi_home <- exp(rv$log_phi_home)
-phi_away <- exp(rv$log_phi_away)
-
-# build etas (HOME-ONLY HFA, matching your current Stan model)
-eta_home <- alpha_last +
-  rv$predicted_team_off_strength[oos_games$home_idx] -
-  rv$predicted_team_def_strength[oos_games$away_idx] +
-  (oos_games$hfa * rv$predicted_team_hfa[oos_games$home_idx])
-
-eta_away <- alpha_last +
-  rv$predicted_team_off_strength[oos_games$away_idx] -
-  rv$predicted_team_def_strength[oos_games$home_idx]
-
-mu_home <- exp(eta_home)
-mu_away <- exp(eta_away)
-
-# expected scores (posterior means)
-oos_exp <- oos_games |>
-  mutate(
-    exp_home = mu_home,
-    exp_away = mu_away,
-    exp_total = exp_home + exp_away,
-    exp_result = exp_home - exp_away
-  )
-
-# simulated scores: convert rvars -> draws matrix, then rnbinom, then back to rvars
-eta_home_mat <- as.matrix(as_draws_matrix(eta_home))
-eta_away_mat <- as.matrix(as_draws_matrix(eta_away))
-
-phi_home_vec <- as.numeric(as.matrix(as_draws_matrix(phi_home)))
-phi_away_vec <- as.numeric(as.matrix(as_draws_matrix(phi_away)))
-
-n_draws <- nrow(eta_home_mat)
-n_games <- ncol(eta_home_mat)
-
-phi_home_mat <- matrix(phi_home_vec, nrow = n_draws, ncol = n_games)
-phi_away_mat <- matrix(phi_away_vec, nrow = n_draws, ncol = n_games)
-
-set.seed(52)
-sim_home_mat <- matrix(
-  rnbinom(
-    n_draws * n_games,
-    size = as.vector(phi_home_mat),
-    mu = exp(as.vector(eta_home_mat))
-  ),
-  nrow = n_draws,
-  ncol = n_games
-)
-sim_away_mat <- matrix(
-  rnbinom(
-    n_draws * n_games,
-    size = as.vector(phi_away_mat),
-    mu = exp(as.vector(eta_away_mat))
-  ),
-  nrow = n_draws,
-  ncol = n_games
-)
-
-oos_sim <- oos_exp |>
-  mutate(
-    sim_home_score = rvar(sim_home_mat),
-    sim_away_score = rvar(sim_away_mat),
-    sim_total = sim_home_score + sim_away_score,
-    sim_result = sim_home_score - sim_away_score
-  )
-
-library(hexbin)
-
-m <- as.matrix(draws_xy[, c("sim_away_score", "sim_home_score")])
-
-
-nb_rvars <- oos_sim |>
-  as_draws()
-
-
-oos_mu_draws <- draws_rvars(
-  mu_home = oos_nb2$mu_home,
-  mu_away = oos_nb2$mu_away,
-  mu_result = oos_nb2$mu_result,
-  mu_total = oos_nb2$mu_total,
-  phi_home = oos_nb2$phi_home,
-) |>
-  spread_draws(
-    mu_home[game_idx],
-    mu_away[game_idx],
-    mu_result[game_idx],
-    mu_total[game_idx]
-  ) |>
-  mutate(
-    game_id = oos_games$game_id[game_idx],
-    .after = game_idx
-  )
-
-p <- oos_mu_draws |>
-  ungroup() |>
-  dplyr::filter(game_idx == 1)
-mcmc_hex(
-  p,
-  pars = c("mu_away", "mu_home"),
-  bins = 10
-)
-
-# or, override the fill scale
-oos_mu_draws |>
-  dplyr::ungroup() |>
-  dplyr::filter(game_idx == 1) |>
-  bayesplot::mcmc_hex(pars = c("mu_away", "mu_home")) +
-  ggplot2::scale_fill_gradientn(
-    breaks = scales::breaks_pretty(n = 6)(c(0, NA)), # supply your range here
-    labels = scales::label_number()
-  )
-
 
 oos_nb3 <- oos_nb2 |>
   mutate(
@@ -1225,314 +1020,669 @@ oos_mu_draws |>
   theme_minimal()
 
 # 8. Probabilistic Predictions ----
+# load nb_rvars
+#nb_rvars <- readRDS("artifacts/model-reports/team_strength/nb_rvars.rds")
+nb_rvars <- readRDS("nb_rvars.rds")
+base_repo_url <- "https://github.com/TylerPollard410/nflendzoneData/releases/download/"
+tag <- "team_strength_negbinom_summary"
+nb_sums_github_url <- paste0(
+  base_repo_url,
+  tag,
+  "/",
+  tag,
+  "_",
+  filter_season,
+  ".arrow"
+)
+
+nb_sums_github_url2 <- pb_download_url()
+
+system.time(
+  nb_sum_github <- arrow::read_feather(nb_sums_github_url)
+)
+
+system.time(
+  nb_sum_github <- arrow::read_feather(nb_sums_github_url)
+)
+
+system.time(
+  nb_sum_github <- arrow::read_feather(nb_sums_github_url)
+)
+
+nb_sum_github2 <- load_from_url(
+  nb_sums_github_url
+)
+
+nb_rvars_github <- nb_sum_github |>
+  #filter(is.na(team) | team == "BAL") |>
+  ungroup() |>
+  mutate(
+    rvariable = rvar_rng(
+      rnorm,
+      n = n(),
+      mean = mean,
+      sd = sd,
+      ndraws = 4000
+    ),
+    .after = variable
+  ) |>
+  # mutate(team = as.numeric(factor(team))) |>
+  # mutate(
+  #   variable = ifelse(!is.na(team), paste0(variable, "[", team, "]"), variable)
+  # ) |>
+  select(variable, rvariable) |>
+  pivot_wider(
+    names_from = variable,
+    values_from = rvariable
+    # id_cols = c(
+    #   "filtered_season",
+    #   "filtered_week",
+    #   "predicted_season",
+    #   "predicted_week"
+    # )
+  ) |>
+  unnest_rvars() |>
+  spread_rvars(!!!rlang::parse_exprs(week_vars)) |>
+  relocate(team, .before = 1) |>
+  mutate(
+    team = teams[team],
+    filtered_season = filter_season,
+    filtered_week = filter_week,
+    predicted_season = predict_season,
+    predicted_week = predict_week,
+    .before = 1
+  )
+
+nb_rvars_plot <- nb_rvars
+nb_rvars_plot <- nb_rvars_github
+
+# nfl data metadata
+teams_data <- nflreadr::load_teams(current = TRUE)
+teams <- teams_data$team_abbr
+filter_season <- unique(nb_rvars_plot$filtered_season)
+filter_week <- unique(nb_rvars_plot$filtered_week)
+predict_season <- unique(nb_rvars_plot$predicted_season)
+predict_week <- unique(nb_rvars_plot$predicted_week)
+
 team_colors <- setNames(teams_data$team_color, teams_data$team_abbr)
 team_colors_light <- colorspace::lighten(team_colors, amount = 0.25)
 
 result_fill_values <- c(team_colors_light, Push = "grey70")
 total_fill_values <- c(Under = "steelblue3", Over = "orange2", Push = "grey70")
 
-oos_pred_rvars <- oos_nb3
+# Load game data
+game_data_full <- nflendzone::load_game_data(
+  seasons = sort(unique(filter_season, predict_season))
+)
 
-oos_preds <- oos_pred_rvars |>
-  mutate(
-    home_mu_cover_prob = Pr(mu_result > spread_line),
-    home_y_cover_prob = Pr(y_result > spread_line),
-    away_mu_cover_prob = Pr(mu_result < spread_line),
-    away_y_cover_prob = Pr(y_result < spread_line),
-    mu_cover_prob = pmax(home_mu_cover_prob, away_mu_cover_prob),
-    y_cover_prob = pmax(home_y_cover_prob, away_y_cover_prob),
-    mu_cover_team = case_when(
-      home_mu_cover_prob > away_mu_cover_prob ~ home_team,
-      home_mu_cover_prob < away_mu_cover_prob ~ away_team,
-      TRUE ~ NA_character_
-    ),
-    y_cover_team = case_when(
-      home_y_cover_prob > away_y_cover_prob ~ home_team,
-      home_y_cover_prob < away_y_cover_prob ~ away_team,
-      TRUE ~ NA_character_
-    )
-    #mu_bet_team = ifelse(mu_cover_prob > 0.55, mu_cover_team, NA_character_),
-    #y_bet_team = ifelse(y_cover_prob > 0.55, y_cover_team, NA_character_)
+# Prepare full schedule with indices (needed for GQ)
+schedule_idx <- prepare_schedule_indices(
+  game_data_full,
+  teams
+)
+
+# Get OOS games
+oos_games <- schedule_idx |>
+  filter(season %in% predict_season, week %in% predict_week)
+
+team_strengths <- nb_rvars_plot |>
+  select(
+    season = filtered_season,
+    week = filtered_week,
+    team,
+    filtered_alpha_log,
+    phi_home,
+    phi_away,
+    filtered_team_off_strength,
+    filtered_team_def_strength,
+    filtered_team_hfa,
+    filtered_league_hfa
   ) |>
   mutate(
-    over_mu_cover_prob = Pr(mu_total > total_line),
-    over_y_cover_prob = Pr(y_total > total_line),
-    under_mu_cover_prob = Pr(mu_total < total_line),
-    under_y_cover_prob = Pr(y_total < total_line),
-    mu_ou_prob = pmax(over_mu_cover_prob, under_mu_cover_prob),
-    y_ou_prob = pmax(over_y_cover_prob, under_y_cover_prob),
-    mu_ou_team = case_when(
-      over_mu_cover_prob > under_mu_cover_prob ~ "Over",
-      over_mu_cover_prob < under_mu_cover_prob ~ "Under",
-      TRUE ~ NA_character_
-    ),
-    y_ou_team = case_when(
-      over_y_cover_prob > under_y_cover_prob ~ "Over",
-      over_y_cover_prob < under_y_cover_prob ~ "Under",
-      TRUE ~ NA_character_
-    )
-    #mu_ou_bet_team = ifelse(mu_ou_prob > 0.55, mu_ou_team, NA_character_),
-    #y_ou_bet_team = ifelse(y_ou_prob > 0.55, y_ou_team, NA_character_)
-  )
-
-oos_pred_draws <- draws_rvars(
-  mu_home = oos_preds$mu_home,
-  y_home = oos_preds$mu_away,
-  mu_away = oos_preds$mu_away,
-  y_away = oos_preds$y_away,
-  mu_result = oos_preds$mu_result,
-  y_result = oos_preds$y_result,
-  mu_total = oos_preds$mu_total,
-  y_total = oos_preds$y_total
-) |>
-  spread_draws(
-    mu_home[game_idx],
-    y_home[game_idx],
-    mu_away[game_idx],
-    y_away[game_idx],
-    mu_result[game_idx],
-    y_result[game_idx],
-    mu_total[game_idx],
-    y_total[game_idx]
+    team_off_strength = exp(filtered_alpha_log + filtered_team_off_strength) -
+      exp(filtered_alpha_log),
+    team_def_strength = exp(filtered_alpha_log + filtered_team_def_strength) -
+      exp(filtered_alpha_log),
+    team_strength = team_off_strength + team_def_strength,
+    team_hfa = exp(filtered_alpha_log + filtered_team_hfa) -
+      exp(filtered_alpha_log),
+    league_hfa = exp(filtered_alpha_log + filtered_league_hfa) -
+      exp(filtered_alpha_log)
   ) |>
   mutate(
-    game_id = oos_games$game_id[game_idx],
-    .after = game_idx
+    n = ndraws(filtered_team_off_strength)
   )
 
-# mu_result vs mu_total as proportion
-oos_pred_draws |>
-  ggplot(ggplot2::aes(mu_result, mu_total)) +
-  stat_bin_hex(
-    bins = 20,
-    aes(fill = after_stat(count / sum(count)))
-  ) +
-  facet_wrap(~game_id) +
-  scale_fill_viridis_c(
-    #limits = c(0, 1),
-    labels = scales::label_percent(accuracy = 1),
-    name = "Proportion"
-  ) +
-  theme_minimal()
+pred_rvars <- oos_games |>
+  left_join(
+    nb_rvars_plot |>
+      # filter(season == max(season)) |>
+      select(
+        season = predicted_season,
+        week = predicted_week,
+        team,
+        predicted_alpha_log,
+        phi_home,
+        phi_away,
+        home_predicted_team_off_strength = predicted_team_off_strength,
+        home_predicted_team_def_strength = predicted_team_def_strength,
+        home_predicted_team_hfa = predicted_team_hfa
+      ),
+    by = c("season", "week", "home_team" = "team")
+  ) |>
+  left_join(
+    nb_rvars_plot |>
+      # filter(season == max(season)) |>
+      select(
+        season = predicted_season,
+        week = predicted_week,
+        team,
+        away_predicted_team_off_strength = predicted_team_off_strength,
+        away_predicted_team_def_strength = predicted_team_def_strength
+      ),
+    by = c("season", "week", "away_team" = "team")
+  ) |>
+  mutate(
+    eta_home = predicted_alpha_log +
+      home_predicted_team_off_strength -
+      away_predicted_team_def_strength +
+      (hfa * (home_predicted_team_hfa / 2)),
+    eta_away = predicted_alpha_log +
+      away_predicted_team_off_strength -
+      home_predicted_team_def_strength -
+      (hfa * (home_predicted_team_hfa / 2)),
+    mu_home = exp(eta_home),
+    mu_away = exp(eta_away),
+    mu_result = mu_home - mu_away,
+    mu_total = mu_home + mu_away
+  ) |>
+  mutate(
+    y_home = rvar_rng(
+      rnbinom,
+      n = nrow(oos_games),
+      mu = mu_home,
+      size = phi_home
+    ),
+    y_away = rvar_rng(
+      rnbinom,
+      n = nrow(oos_games),
+      mu = mu_away,
+      size = phi_away
+    ),
+    y_result = y_home - y_away,
+    y_total = y_home + y_away
+  )
 
-# y_result vs y_total as proportion
-oos_pred_draws |>
-  ggplot(ggplot2::aes(mu_result, mu_total)) +
-  stat_bin_hex(
-    bins = 20,
-    #aes(fill = after_stat(count / sum(count)))
-  ) +
-  facet_wrap(~game_id) +
-  ggplot2::scale_fill_viridis_c(
-    breaks = scales::breaks_pretty(6),
-    labels = scales::label_number()
-  ) +
-  theme_bw()
+# # mu_result vs mu_total as proportion
+# oos_pred_draws |>
+#   ggplot(ggplot2::aes(mu_result, mu_total)) +
+#   stat_bin_hex(
+#     bins = 20,
+#     aes(fill = after_stat(count / sum(count)))
+#   ) +
+#   facet_wrap(~game_id) +
+#   scale_fill_viridis_c(
+#     #limits = c(0, 1),
+#     labels = scales::label_percent(accuracy = 1),
+#     name = "Proportion"
+#   ) +
+#   theme_minimal()
 
-# install.packages("ggside") # if needed
+# # y_result vs y_total as proportion
+# oos_pred_draws |>
+#   ggplot(ggplot2::aes(mu_result, mu_total)) +
+#   stat_bin_hex(
+#     bins = 20,
+#     #aes(fill = after_stat(count / sum(count)))
+#   ) +
+#   facet_wrap(~game_id) +
+#   ggplot2::scale_fill_viridis_c(
+#     breaks = scales::breaks_pretty(6),
+#     labels = scales::label_number()
+#   ) +
+#   theme_bw()
 
-# Hexbin of mu_result vs mu_total with side histograms (counts)
-oos_pred_draws |>
-  ggplot2::ggplot(ggplot2::aes(mu_result, mu_total)) +
-  ggplot2::stat_bin_hex(bins = 20) +
-  ggside::geom_xsidehistogram(bins = 30, fill = "grey45", alpha = 0.7) +
-  ggside::geom_ysidehistogram(bins = 30, fill = "grey45", alpha = 0.7) +
-  facet_wrap(~game_id) +
+# # install.packages("ggside") # if needed
+
+# # Hexbin of mu_result vs mu_total with side histograms (counts)
+# oos_pred_draws |>
+#   ggplot2::ggplot(ggplot2::aes(mu_result, mu_total)) +
+#   ggplot2::stat_bin_hex(bins = 20) +
+#   ggside::geom_xsidehistogram(bins = 30, fill = "grey45", alpha = 0.7) +
+#   ggside::geom_ysidehistogram(bins = 30, fill = "grey45", alpha = 0.7) +
+#   facet_wrap(~game_id) +
+#   ggplot2::scale_fill_viridis_c(
+#     breaks = scales::breaks_pretty(6),
+#     labels = scales::label_number(),
+#     name = "Count"
+#   ) +
+#   ggplot2::theme_minimal() +
+#   ggplot2::theme(ggside.panel.scale = 0.25)
+
+## 8.1 One Game Test ----
+game_id_sel <- pred_rvars |>
+  filter(home_team == "BAL" | away_team == "BAL") |>
+  pull(game_id)
+
+# 1) Get rvar row for the game (to use Pr) and the per-draw data (to plot)
+one_game_rvars <- pred_rvars |>
+  dplyr::filter(game_id == game_id_sel)
+
+one_game_draws <- one_game_rvars |>
+  unnest_rvars()
+
+# # 2) Quadrant + marginal probabilities using Pr() on rvars
+# probs <- one_game_rvars |>
+#   summarise(
+#     p_home_over = Pr(mu_result > spread_line & mu_total > total_line),
+#     p_home_under = Pr(mu_result > spread_line & mu_total < total_line),
+#     p_away_over = Pr(mu_result < spread_line & mu_total > total_line),
+#     p_away_under = Pr(mu_result < spread_line & mu_total < total_line),
+#     p_home_cover = Pr(mu_result > spread_line),
+#     p_away_cover = Pr(mu_result < spread_line),
+#     p_over = Pr(mu_total > total_line),
+#     p_under = Pr(mu_total < total_line),
+#     spread_line = dplyr::first(spread_line),
+#     total_line = dplyr::first(total_line),
+#     home_team = dplyr::first(home_team),
+#     away_team = dplyr::first(away_team)
+#   )
+
+# # 3) Label positions inside the main panel
+# xr <- range(one_game_draws$mu_result, na.rm = TRUE)
+# yr <- range(one_game_draws$mu_total, na.rm = TRUE)
+# x_off <- diff(xr) * 0.25
+# y_off <- diff(yr) * 0.25
+# x_off_min <- quantile(one_game_draws$mu_result, probs = 0.005, na.rm = TRUE)
+# x_off_max <- quantile(one_game_draws$mu_result, probs = 0.995, na.rm = TRUE)
+# y_off_min <- quantile(one_game_draws$mu_total, probs = 0.005, na.rm = TRUE)
+# y_off_max <- quantile(one_game_draws$mu_total, probs = 0.995, na.rm = TRUE)
+
+# quad_labels <- tibble::tibble(
+#   # x = probs$spread_line + c(x_off, x_off, -x_off, -x_off),
+#   # y = probs$total_line + c(y_off, -y_off, y_off, -y_off),
+#   x = c(x_off_max, x_off_max, x_off_min, x_off_min),
+#   y = c(y_off_max, y_off_min, y_off_max, y_off_min),
+#   label = c(
+#     paste0(
+#       probs$home_team,
+#       " cover & Over:  ",
+#       percent(probs$p_home_over, 0.1)
+#     ),
+#     paste0(
+#       probs$home_team,
+#       " cover & Under: ",
+#       percent(probs$p_home_under, 0.1)
+#     ),
+#     paste0(
+#       probs$away_team,
+#       " cover & Over:  ",
+#       percent(probs$p_away_over, 0.1)
+#     ),
+#     paste0(
+#       probs$away_team,
+#       " cover & Under: ",
+#       percent(probs$p_away_under, 0.1)
+#     )
+#   )
+# )
+
+# # 4) (Optional) side-panel text labels; if your ggside lacks sidetext geoms, remove these two layers
+# xside_labels <- tibble::tibble(
+#   # x = probs$spread_line + c(-x_off, x_off),
+#   # y = Inf,
+#   x = c(x_off_min, x_off_max),
+#   y = Inf,
+#   label = c(
+#     paste0(probs$away_team, " cover: ", percent(probs$p_away_cover, 0.1)),
+#     paste0(probs$home_team, " cover: ", percent(probs$p_home_cover, 0.1))
+#   )
+# )
+# yside_labels <- tibble::tibble(
+#   # y = probs$total_line + c(-y_off, y_off),
+#   # x = Inf,
+#   y = c(y_off_min, y_off_max),
+#   x = Inf,
+#   label = c(
+#     paste0("Under: ", percent(probs$p_under, 0.1)),
+#     paste0("Over:  ", percent(probs$p_over, 0.1))
+#   )
+# )
+
+# # 5) Plot: hexbin counts, decision lines, in-panel quadrant labels, side marginals
+# one_game_draws |>
+#   mutate(
+#     home_team = probs$home_team,
+#     away_team = probs$away_team,
+#     spread_line = probs$spread_line,
+#     total_line = probs$total_line,
+#     .after = game_id
+#   ) |>
+#   mutate(
+#     result_bin = case_when(
+#       mu_result > spread_line ~ home_team,
+#       mu_result < spread_line ~ away_team,
+#       TRUE ~ "Push"
+#     ),
+#     total_bin = case_when(
+#       mu_total > total_line ~ "Over",
+#       mu_total < total_line ~ "Under",
+#       TRUE ~ "Push"
+#     )
+#   ) |>
+#   # mutate(
+#   #   result_bin = factor(
+#   #     result_bin,
+#   #     levels = c(probs$away_team, "Push", probs$home_team)
+#   #   ),
+#   #   total_bin = factor(total_bin, levels = c("Under", "Push", "Over"))
+#   # ) |>
+#   ggplot(aes(mu_result, mu_total)) +
+#   # main joint hex counts
+#   stat_bin_hex(
+#     #bins = 20,
+#     binwidth = c(1, 1),
+#   ) +
+#   scale_fill_viridis_c(
+#     breaks = breaks_pretty(6),
+#     labels = label_number(),
+#     name = "Count"
+#   ) +
+#   # decision lines
+#   geom_vline(
+#     data = probs,
+#     aes(xintercept = spread_line),
+#     linetype = 2,
+#     color = "red"
+#   ) +
+#   geom_hline(
+#     data = probs,
+#     aes(yintercept = total_line),
+#     linetype = 2,
+#     color = "red"
+#   ) +
+#   # quadrant probabilities (in-panel)
+#   geom_label(
+#     data = quad_labels,
+#     aes(x = x, y = y, label = label),
+#     inherit.aes = FALSE,
+#     size = 3
+#   ) +
+#   # side marginals (counts)
+#   new_scale_fill() +
+#   ggside::geom_xsidehistogram(
+#     aes(y = after_stat(count), fill = result_bin),
+#     #bins = 30,
+#     binwidth = 1,
+#     boundary = probs$spread_line,
+#     alpha = 0.7
+#   ) +
+#   scale_fill_manual(
+#     values = result_fill_values
+#     #breaks = c(probs$away_team, "Push", probs$home_team),
+#     #name = "Result bins"
+#     #drop = FALSE
+#   ) +
+#   new_scale_fill() +
+#   ggside::geom_ysidehistogram(
+#     aes(x = after_stat(count), fill = total_bin),
+#     #bins = 30,
+#     binwidth = 1,
+#     boundary = probs$total_line,
+#     alpha = 0.7
+#   ) +
+#   # separate side-panel fill scales from main fill
+#   scale_fill_manual(
+#     values = total_fill_values
+#     #breaks = c(probs$away_team, "Push", probs$home_team),
+#     #name = "Result bins"
+#     #drop = FALSE
+#   ) +
+#   # ggside::scale_yfill_manual(
+#   #   values = total_fill_values,
+#   #   breaks = c("Under", "Push", "Over"),
+#   #   name = "Total bins",
+#   #   drop = FALSE
+#   # ) +
+#   # side-panel probability labels (comment out if unavailable in your ggside)
+#   ggside::geom_xsidetext(
+#     data = xside_labels,
+#     aes(x = x, y = Inf, label = label),
+#     inherit.aes = FALSE,
+#     vjust = 1.1,
+#     size = 3
+#   ) +
+#   ggside::geom_ysidetext(
+#     data = yside_labels,
+#     aes(x = Inf, y = y, label = label),
+#     inherit.aes = FALSE,
+#     hjust = 1.1,
+#     size = 3
+#   ) +
+#   facet_wrap(~game_id) +
+#   labs(
+#     x = "Result",
+#     y = "Total"
+#   ) +
+#   theme_minimal() +
+#   theme_ggside_void() +
+#   theme(
+#     ggside.panel.scale = 0.25,
+#     ggside.axis.line = element_blank(),
+#     ggside.axis.ticks = element_blank(),
+#     ggside.axis.text = element_blank(),
+#     legend.position = "none"
+#   )
+
+# one_game <- pred_rvars$game_id[3]
+# one_game_rvars <- pred_rvars |>
+#   dplyr::filter(game_id == one_game)
+# one_game_draws <- one_game_rvars |>
+#   tidybayes::unnest_rvars()
+
+spread_line_use <- one_game_rvars$spread_line
+total_line_use <- one_game_rvars$total_line
+
+# joint_y_prob_plot <-
+# shiny::req(input$team_game)
+# shiny::req(spread_line_rv(), total_line_rv())
+
+# game_id_sel <- input$team_game
+
+# one_game_rvars <- pred_rvars |>
+#   dplyr::filter(game_id == game_id_sel)
+
+# one_game_draws <- one_game_rvars |>
+#   tidybayes::unnest_rvars()
+
+one_game_rvars <- one_game_rvars |>
+  dplyr::mutate(
+    p_home_over = posterior::Pr(
+      y_result > spread_line_use & y_total > total_line_use
+    ),
+    p_home_under = posterior::Pr(
+      y_result > spread_line_use & y_total < total_line_use
+    ),
+    p_away_over = posterior::Pr(
+      y_result < spread_line_use & y_total > total_line_use
+    ),
+    p_away_under = posterior::Pr(
+      y_result < spread_line_use & y_total < total_line_use
+    ),
+    p_home_cover = posterior::Pr(y_result > spread_line_use),
+    p_away_cover = posterior::Pr(y_result < spread_line_use),
+    p_over = posterior::Pr(y_total > total_line_use),
+    p_under = posterior::Pr(y_total < total_line_use)
+  )
+
+x_off_min <- stats::quantile(
+  one_game_rvars$y_result,
+  probs = 0.005,
+  na.rm = TRUE
+)
+x_off_max <- stats::quantile(
+  one_game_rvars$y_result,
+  probs = 0.995,
+  na.rm = TRUE
+)
+y_off_min <- stats::quantile(
+  one_game_rvars$y_total,
+  probs = 0.005,
+  na.rm = TRUE
+)
+y_off_max <- stats::quantile(
+  one_game_rvars$y_total,
+  probs = 0.995,
+  na.rm = TRUE
+)
+
+quad_labels <- tibble::tibble(
+  x = c(x_off_max, x_off_max, x_off_min, x_off_min),
+  y = c(y_off_max, y_off_min, y_off_max, y_off_min),
+  label = c(
+    paste0(
+      one_game_rvars$home_team,
+      " cover & Over:  ",
+      scales::percent(one_game_rvars$p_home_over, 0.1)
+    ),
+    paste0(
+      one_game_rvars$home_team,
+      " cover & Under: ",
+      scales::percent(one_game_rvars$p_home_under, 0.1)
+    ),
+    paste0(
+      one_game_rvars$away_team,
+      " cover & Over:  ",
+      scales::percent(one_game_rvars$p_away_over, 0.1)
+    ),
+    paste0(
+      one_game_rvars$away_team,
+      " cover & Under: ",
+      scales::percent(one_game_rvars$p_away_under, 0.1)
+    )
+  )
+)
+
+xside_labels <- tibble::tibble(
+  x = c(x_off_min, x_off_max),
+  y = Inf,
+  label = c(
+    paste0(
+      one_game_rvars$away_team,
+      " cover: ",
+      scales::percent(one_game_rvars$p_away_cover, 0.1)
+    ),
+    paste0(
+      one_game_rvars$home_team,
+      " cover: ",
+      scales::percent(one_game_rvars$p_home_cover, 0.1)
+    )
+  )
+)
+
+yside_labels <- tibble::tibble(
+  y = c(y_off_min, y_off_max),
+  x = Inf,
+  label = c(
+    paste0("Under: ", scales::percent(one_game_rvars$p_under, 0.1)),
+    paste0("Over:  ", scales::percent(one_game_rvars$p_over, 0.1))
+  )
+)
+
+joint_y_prob_plot <- one_game_draws |>
+  dplyr::mutate(
+    result_bin = dplyr::case_when(
+      y_result > spread_line_use ~ home_team,
+      y_result < spread_line_use ~ away_team,
+      TRUE ~ "Push"
+    ),
+    total_bin = dplyr::case_when(
+      y_total > total_line_use ~ "Over",
+      y_total < total_line_use ~ "Under",
+      TRUE ~ "Push"
+    )
+  ) |>
+  ggplot2::ggplot(ggplot2::aes(y_result, y_total)) +
+  ggplot2::stat_bin_hex(binwidth = c(2, 2)) +
   ggplot2::scale_fill_viridis_c(
     breaks = scales::breaks_pretty(6),
     labels = scales::label_number(),
     name = "Count"
   ) +
-  ggplot2::theme_minimal() +
-  ggplot2::theme(ggside.panel.scale = 0.25)
-
-## 8.1 One Game Test ----
-game_id_sel <- "2025_16_NE_BAL"
-
-# 1) Get rvar row for the game (to use Pr) and the per-draw data (to plot)
-one_game_rvars <- oos_pred_rvars |>
-  filter(game_id == game_id_sel)
-
-one_game_draws <- oos_pred_draws |>
-  filter(game_id == game_id_sel) # has per-draw mu_* values for plotting
-
-# 2) Quadrant + marginal probabilities using Pr() on rvars
-probs <- one_game_rvars |>
-  summarise(
-    p_home_over = Pr(mu_result > spread_line & mu_total > total_line),
-    p_home_under = Pr(mu_result > spread_line & mu_total < total_line),
-    p_away_over = Pr(mu_result < spread_line & mu_total > total_line),
-    p_away_under = Pr(mu_result < spread_line & mu_total < total_line),
-    p_home_cover = Pr(mu_result > spread_line),
-    p_away_cover = Pr(mu_result < spread_line),
-    p_over = Pr(mu_total > total_line),
-    p_under = Pr(mu_total < total_line),
-    spread_line = dplyr::first(spread_line),
-    total_line = dplyr::first(total_line),
-    home_team = dplyr::first(home_team),
-    away_team = dplyr::first(away_team)
-  )
-
-# 3) Label positions inside the main panel
-xr <- range(one_game_draws$mu_result, na.rm = TRUE)
-yr <- range(one_game_draws$mu_total, na.rm = TRUE)
-x_off <- diff(xr) * 0.5
-y_off <- diff(yr) * 0.5
-
-quad_labels <- tibble::tibble(
-  x = probs$spread_line + c(x_off, x_off, -x_off, -x_off),
-  y = probs$total_line + c(y_off, -y_off, y_off, -y_off),
-  label = c(
-    paste0(
-      probs$home_team,
-      " cover & Over:  ",
-      percent(probs$p_home_over, 0.1)
-    ),
-    paste0(
-      probs$home_team,
-      " cover & Under: ",
-      percent(probs$p_home_under, 0.1)
-    ),
-    paste0(
-      probs$away_team,
-      " cover & Over:  ",
-      percent(probs$p_away_over, 0.1)
-    ),
-    paste0(
-      probs$away_team,
-      " cover & Under: ",
-      percent(probs$p_away_under, 0.1)
-    )
-  )
-)
-
-# 4) (Optional) side-panel text labels; if your ggside lacks sidetext geoms, remove these two layers
-xside_labels <- tibble::tibble(
-  x = probs$spread_line + c(-x_off, x_off),
-  y = Inf,
-  label = c(
-    paste0(probs$away_team, " cover: ", percent(probs$p_away_cover, 0.1)),
-    paste0(probs$home_team, " cover: ", percent(probs$p_home_cover, 0.1))
-  )
-)
-yside_labels <- tibble::tibble(
-  y = probs$total_line + c(-y_off, y_off),
-  x = Inf,
-  label = c(
-    paste0("Under: ", percent(probs$p_under, 0.1)),
-    paste0("Over:  ", percent(probs$p_over, 0.1))
-  )
-)
-
-# 5) Plot: hexbin counts, decision lines, in-panel quadrant labels, side marginals
-one_game_draws |>
-  mutate(
-    home_team = probs$home_team,
-    away_team = probs$away_team,
-    spread_line = probs$spread_line,
-    total_line = probs$total_line,
-    .after = game_id
-  ) |>
-  mutate(
-    result_bin = case_when(
-      mu_result > spread_line ~ home_team,
-      mu_result < spread_line ~ away_team,
-      TRUE ~ "Push"
-    ),
-    total_bin = case_when(
-      mu_total > total_line ~ "Over",
-      mu_total < total_line ~ "Under",
-      TRUE ~ "Push"
-    )
-  ) |>
-  # mutate(
-  #   result_bin = factor(
-  #     result_bin,
-  #     levels = c(probs$away_team, "Push", probs$home_team)
-  #   ),
-  #   total_bin = factor(total_bin, levels = c("Under", "Push", "Over"))
-  # ) |>
-  ggplot(aes(mu_result, mu_total)) +
-  # main joint hex counts
-  stat_bin_hex(bins = 20) +
-  scale_fill_viridis_c(
-    breaks = breaks_pretty(6),
-    labels = label_number(),
-    name = "Count"
-  ) +
-  # decision lines
-  geom_vline(
-    data = probs,
-    aes(xintercept = spread_line),
+  ggplot2::geom_vline(
+    xintercept = spread_line_use,
     linetype = 2,
     color = "red"
   ) +
-  geom_hline(
-    data = probs,
-    aes(yintercept = total_line),
+  ggplot2::geom_hline(
+    yintercept = total_line_use,
     linetype = 2,
     color = "red"
   ) +
-  # quadrant probabilities (in-panel)
-  geom_label(
+  ggplot2::geom_label(
     data = quad_labels,
-    aes(x = x, y = y, label = label),
+    ggplot2::aes(x = x, y = y, label = label),
     inherit.aes = FALSE,
     size = 3
   ) +
-  # side marginals (counts)
-  new_scale_fill() +
+  ggnewscale::new_scale_fill() +
   ggside::geom_xsidehistogram(
-    aes(y = after_stat(count), fill = result_bin),
-    bins = 30,
-    boundary = probs$spread_line,
+    ggplot2::aes(y = ggplot2::after_stat(count), fill = result_bin),
+    binwidth = 1,
+    boundary = spread_line_use,
     alpha = 0.7
   ) +
-  scale_fill_manual(
-    values = result_fill_values
-    #breaks = c(probs$away_team, "Push", probs$home_team),
-    #name = "Result bins"
-    #drop = FALSE
-  ) +
-  new_scale_fill() +
+  ggplot2::scale_fill_manual(values = result_fill_values) +
+  ggnewscale::new_scale_fill() +
   ggside::geom_ysidehistogram(
-    aes(x = after_stat(count), fill = total_bin),
-    bins = 30,
-    boundary = probs$total_line,
+    ggplot2::aes(x = ggplot2::after_stat(count), fill = total_bin),
+    binwidth = 1,
+    boundary = total_line_use,
     alpha = 0.7
   ) +
-  # separate side-panel fill scales from main fill
-  scale_fill_manual(
-    values = total_fill_values
-    #breaks = c(probs$away_team, "Push", probs$home_team),
-    #name = "Result bins"
-    #drop = FALSE
-  ) +
-  # ggside::scale_yfill_manual(
-  #   values = total_fill_values,
-  #   breaks = c("Under", "Push", "Over"),
-  #   name = "Total bins",
-  #   drop = FALSE
-  # ) +
-  # side-panel probability labels (comment out if unavailable in your ggside)
+  ggplot2::scale_fill_manual(values = total_fill_values) +
   ggside::geom_xsidetext(
     data = xside_labels,
-    aes(x = x, y = Inf, label = label),
+    ggplot2::aes(x = x, y = Inf, label = label),
     inherit.aes = FALSE,
     vjust = 1.1,
     size = 3
   ) +
   ggside::geom_ysidetext(
     data = yside_labels,
-    aes(x = Inf, y = y, label = label),
+    ggplot2::aes(x = Inf, y = y, label = label),
     inherit.aes = FALSE,
     hjust = 1.1,
     size = 3
   ) +
-  facet_wrap(~game_id) +
-  theme_minimal() +
-  theme_ggside_classic() +
-  theme(
+  ggplot2::scale_x_continuous(minor_breaks = seq(-20, 20, by = 1)) +
+  # ggplot2::coord_cartesian(
+  #   xlim = c(-21, 21),
+  #   ylim = c(20, 70)
+  # ) +
+  ggplot2::facet_wrap(~game_id) +
+  ggplot2::labs(x = "Result", y = "Total") +
+  ggplot2::theme_minimal() +
+  ggside::theme_ggside_void() +
+  ggplot2::theme(
     ggside.panel.scale = 0.25,
+    ggside.axis.line = ggplot2::element_blank(),
+    ggside.axis.ticks = ggplot2::element_blank(),
+    ggside.axis.text = ggplot2::element_blank(),
+    panel.grid.minor = ggplot2::element_line(
+      color = "grey90",
+      linewidth = 0.3
+    ),
     legend.position = "none"
   )
+joint_y_prob_plot
+plotly::ggplotly(joint_y_prob_plot)
+joint_y_prob_plot_build <- ggplot2::ggplot_build(joint_y_prob_plot)
+joint_y_prob_plot_build_data <- joint_y_prob_plot_build@data
+
+
+fit_bivar_negbinom2_new <- mod_nb2$pathfinder(
+  data = fit_stan_data,
+  seed = 52,
+  init = fit_bivar_negbinom2
+)

@@ -134,8 +134,8 @@ parameters {
   real<lower=0, upper=1> phi_alpha_log;
   
   // Shared per-game pace/environment effect (induces home/away correlation)
-  vector[N_games] z_game_pace;
-  real<lower=0> sigma_game_pace;
+  // vector[N_games] z_game_pace;
+  // real<lower=0> sigma_game_pace;
   
   // Hierarchical shrinkage for overdispersion (phi)
   real log_phi_league;
@@ -200,7 +200,7 @@ transformed parameters {
     team_strength[w] = team_off_strength[w] + team_def_strength[w];
   
   // Shared game pace
-  vector[N_games] game_pace = z_game_pace * sigma_game_pace;
+  // vector[N_games] game_pace = z_game_pace * sigma_game_pace;
   
   // Hierarchical dispersion
   real<lower=0> phi_home = exp(
@@ -261,8 +261,8 @@ model {
   phi_alpha_log ~ beta(8, 2);
   
   // Shared game pace
-  z_game_pace ~ std_normal();
-  sigma_game_pace ~ student_t(3, 0, 0.30);
+  // z_game_pace ~ std_normal();
+  // sigma_game_pace ~ student_t(3, 0, 0.30);
   
   // Dispersion shrinkage
   log_phi_league ~ normal(log(12), 0.8);
@@ -280,8 +280,8 @@ model {
                                N_games);
     
     // within-game correlation
-    eta[ : , 1] += game_pace;
-    eta[ : , 2] += game_pace;
+    // eta[ : , 1] += game_pace;
+    // eta[ : , 2] += game_pace;
     
     home_score ~ neg_binomial_2_log(eta[ : , 1], phi_home);
     away_score ~ neg_binomial_2_log(eta[ : , 2], phi_away);
@@ -375,8 +375,8 @@ generated quantities {
                                week_idx, season_idx, hfa, team_off_strength,
                                team_def_strength, team_hfa, alpha_log,
                                N_games);
-    eta[ : , 1] += game_pace;
-    eta[ : , 2] += game_pace;
+    // eta[ : , 1] += game_pace;
+    // eta[ : , 2] += game_pace;
     
     for (g in 1 : N_games) 
       log_lik[g] = neg_binomial_2_log_lpmf(home_score[g] | eta[g, 1],
