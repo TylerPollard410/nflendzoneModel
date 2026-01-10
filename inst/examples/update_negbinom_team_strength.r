@@ -54,30 +54,6 @@ github_releases_base_url <- paste0(
   "/releases/download/"
 )
 
-# github_release_url <- function(tag, file = "rds") {
-#   paste0(
-#     "https://github.com/TylerPollard410/nflendzoneData/releases/download/",
-#     tag,
-#     "/",
-#     tag,
-#     ".",
-#     file
-#   )
-# }
-
-# github_release_url("season_standings", "rds")
-
-# system.time(
-#   t <- load_from_url(
-#     url = github_release_url("team_features", "parquet"),
-#     seasons = 2025
-#   ) |>
-#     filter(SRS > 5) |>
-#     group_by(team) |>
-#     summarise(mean_SRS = mean(SRS, na.rm = TRUE))
-# )
-# object.size(t)
-
 # Get teams and seasons
 # Replace with: teams <- nflendzone::load_teams(current = TRUE)$team_abbr
 teams_data <- nflreadr::load_teams(current = TRUE)
@@ -119,13 +95,6 @@ fit_stan_data <- prepare_stan_data(
   teams = teams,
   verbose = TRUE
 )
-
-# Roll forward to include current season up to current_week - 1
-# fit_stan_data <- roll_forward_fit_stan_data(
-#   fit_stan_data,
-#   schedule_idx,
-#   weeks_ahead = current_week - 1
-# )
 
 # ============================================================================ #
 # 2. Prepare GQ Data for Predictions ----
@@ -178,66 +147,6 @@ fit_max_treedepth = 10
 
 cat("\n=== Fitting Model ===\n")
 
-fit_univar_normal <- fit_team_strength_model(
-  model = "team_strength_fit",
-  stan_data = fit_stan_data,
-  seed = fit_seed,
-  # init = 0,
-  sig_figs = fit_sig_figs,
-  chains = fit_chains,
-  parallel_chains = fit_parallel,
-  iter_warmup = fit_warm,
-  iter_sampling = fit_samps,
-  thin = fit_thin,
-  adapt_delta = fit_adapt_delta,
-  max_treedepth = fit_max_treedepth
-)
-
-fit_univar_student <- fit_team_strength_model(
-  stan_data = fit_stan_data,
-  model = "team_strength_univar_student",
-  seed = fit_seed,
-  # init = 0,
-  sig_figs = fit_sig_figs,
-  chains = fit_chains,
-  parallel_chains = fit_parallel,
-  iter_warmup = fit_warm,
-  iter_sampling = fit_samps,
-  thin = fit_thin,
-  adapt_delta = fit_adapt_delta,
-  max_treedepth = fit_max_treedepth
-)
-
-fit_bivar_normal <- fit_team_strength_model(
-  stan_data = fit_stan_data,
-  model = "team_strength_bivar_normal",
-  seed = fit_seed,
-  # init = 0,
-  sig_figs = fit_sig_figs,
-  chains = fit_chains,
-  parallel_chains = fit_parallel,
-  iter_warmup = fit_warm,
-  iter_sampling = fit_samps,
-  thin = fit_thin,
-  adapt_delta = fit_adapt_delta,
-  max_treedepth = fit_max_treedepth
-)
-
-fit_bivar_poisson <- fit_team_strength_model(
-  stan_data = fit_stan_data,
-  model = "team_strength_bivar_poisson",
-  seed = fit_seed,
-  init = 0,
-  sig_figs = fit_sig_figs,
-  chains = fit_chains,
-  parallel_chains = fit_parallel,
-  iter_warmup = fit_warm,
-  iter_sampling = fit_samps,
-  thin = fit_thin,
-  adapt_delta = fit_adapt_delta,
-  max_treedepth = fit_max_treedepth
-)
-
 fit_bivar_negbinom <- fit_team_strength_model(
   stan_data = fit_stan_data,
   model = "team_strength_bivar_negbinom",
@@ -252,85 +161,9 @@ fit_bivar_negbinom <- fit_team_strength_model(
   adapt_delta = fit_adapt_delta,
   max_treedepth = fit_max_treedepth
 )
-
-# mod_nb2 <- cmdstan_model("src/stan/team_strength_bivar_negbinom.stan")
-# fit_bivar_negbinom <- mod_nb2$sample(
-#   data = fit_stan_data,
-#   # model = "team_strength_bivar_negbinom",
-#   seed = fit_seed,
-#   #init = 0,
-#   sig_figs = fit_sig_figs,
-#   chains = fit_chains,
-#   parallel_chains = fit_parallel,
-#   iter_warmup = fit_warm,
-#   iter_sampling = fit_samps,
-#   thin = fit_thin,
-#   adapt_delta = fit_adapt_delta,
-#   max_treedepth = fit_max_treedepth
-# )
 fit_bivar_negbinom$diagnostic_summary()
 fit_bivar_negbinom$cmdstan_diagnose()
 
-fit_names <- c(
-  #"univar_normal",
-  #"univar_student",
-  #"bivar_normal",
-  #"bivar_poisson",
-  "bivar_negbinom",
-  "bivar_negbinom2"
-)
-
-# Manually update fits that were just run
-fit_list <- list(
-  #fit_univar_normal,
-  #fit_univar_student,
-  #fit_bivar_normal,
-  #fit_bivar_poisson,
-  fit_bivar_negbinom,
-  fit_bivar_negbinom2
-) |>
-  set_names(fit_names)
-
-# Or, load previously saved fits and modify with newly run fits
-fit_list_load <- fit_names |>
-  map(
-    \(.name) {
-      file <- paste0(
-        "artifacts/model-archive/team_strength/",
-        .name,
-        ".rds"
-      )
-      if (file.exists(file)) readRDS(file) else NULL
-    }
-  ) |>
-  set_names(fit_names)
-
-fit_list <- fit_list_load |> #fit_list_load |>
-  #list_modify(univar_normal = fit_univar_normal) |>
-  #list_modify(bivar_negbinom = fit_bivar_negbinom) |>
-  list_modify(bivar_negbinom2 = fit_bivar_negbinom2)
-rm(fit_list_load)
-
-## 3.2 Save Fit Outputs ----
-new_fits <- c(
-  #"univar_normal",
-  #"bivar_negbinom",
-  "bivar_negbinom2"
-)
-fit_list |>
-  iwalk(
-    \(.fit, .name) {
-      if (!.name %in% new_fits) {
-        return()
-      }
-      cat("\n=== Saving Fit Outputs for", .name, "===\n")
-      tic()
-      .fit$save_object(
-        file = paste0("artifacts/model-archive/team_strength/", .name, ".rds")
-      )
-      toc()
-    }
-  )
 fit_bivar_negbinom$save_object(
   file = paste0(
     "artifacts/model-archive/team_strength/",
@@ -340,9 +173,7 @@ fit_bivar_negbinom$save_object(
 )
 
 ## 3.3 Loo ----
-fit_loo <- fit_list |>
-  #keep_at(c("bivar_negbinom", "bivar_negbinom2")) |>
-  map(\(.fit) .fit$loo())
+fit_loo <- fit_bivar_negbinom$loo()
 fit_loo |> print()
 fit_loo |> loo::loo_compare()
 fit_loo |> loo::loo_model_weights()
@@ -409,24 +240,6 @@ predict_week <- schedule_idx |>
 
 ## 6.1 Draws & rvars ----
 # Extract team strengths with rvars
-#fit_draws <- fit$draws()
-#fit_rvars <- as_draws_rvars(fit_draws)
-fit_draws_list <- fit_list |>
-  map(
-    \(.fit) {
-      .fit$draws()
-    }
-  )
-fit_rvars_list <- fit_list |>
-  map(
-    \(.fit) {
-      .fit$draws() |>
-        as_draws_rvars()
-    }
-  )
-
-# gq_draws <- gq$draws()
-# gq_rvars <- as_draws_rvars(gq_draws)
 
 ### 6.1.1 Negative Binomial Draws ----
 nb_draws <- fit_bivar_negbinom$draws()
@@ -489,10 +302,7 @@ pb_write(
 gc()
 
 
-nb_rvars <-
-  # fit_rvars_list |>
-  # pluck("bivar_negbinom2") |>
-  nb_rvars |>
+nb_rvars <- nb_rvars |>
   spread_rvars(
     phi_home,
     phi_away,
@@ -517,79 +327,6 @@ nb_rvars <-
   ) |>
   relocate(team, .after = predicted_season)
 
-nb_rvars_un <- nb_rvars |>
-  mutate(team = as.integer(factor(team))) |>
-  select(
-    -c(filtered_season, filtered_week, predicted_season, predicted_week)
-  ) |>
-  unnest_rvars()
-
-nb_draws_un <- nb_rvars_un |>
-  unspread_draws(!!!rlang::parse_exprs(week_vars))
-
-nb_draws_un_sum <-
-  #nb_draws_un |>
-  nb_rvars_un |>
-  #spread_draws(!!!rlang::parse_exprs(week_vars)) |>
-  summarise_draws() |>
-  mutate(
-    team = ifelse(
-      variable %in% str_subset(week_vars, "\\[", negate = TRUE),
-      NA,
-      team
-    )
-  ) |>
-  distinct() |>
-  mutate(
-    team = teams[team],
-    filtered_season = filter_season,
-    filtered_week = filter_week,
-    predicted_season = predict_season,
-    predicted_week = predict_week,
-    .before = 1
-  )
-
-nb_draws_un_sum1 <- nb_rvars |>
-  summarise_draws()
-
-nb_draws_un_sum2 <- nb_draws_un_sum |>
-  ungroup() |>
-  mutate(
-    rvariable = rvar_rng(
-      rnorm,
-      n = nrow(nb_draws_un_sum),
-      mean = mean,
-      sd = sd,
-      ndraws = 4000
-    ),
-    .after = variable
-  ) |>
-  mutate(team = as.numeric(factor(team))) |>
-  mutate(
-    variable = ifelse(!is.na(team), paste0(variable, "[", team, "]"), variable)
-  ) |>
-  select(variable, rvariable) |>
-  pivot_wider(names_from = variable, values_from = rvariable) |>
-  unnest_rvars() |>
-  spread_rvars(!!!rlang::parse_exprs(week_vars)) |>
-  mutate(
-    team = teams[team]
-  ) |>
-  relocate(team, .before = 1)
-
-
-nb_draws_un |>
-  mcmc_dens(regex_pars = "predicted_team_off_strength")
-
-nb_draws_un |>
-  mcmc_dens(regex_pars = 'filtered_team_off_strength')
-
-nb_draws_un_df <- nb_draws_un |>
-  as_draws()
-
-nb_rvars_un <- nb_draws_un |>
-  nest_rvars()
-
 dir.create(
   "artifacts/model-reports/team_strength",
   recursive = TRUE,
@@ -598,46 +335,14 @@ dir.create(
 saveRDS(nb_rvars, "artifacts/model-reports/team_strength/nb_rvars.rds")
 
 ## 6.2 Hyperparameters ----
-fit_rvars_list <- list(
-  "bivar_negbinom" = nb_rvars2
-)
-fit_hyperparams_list <- fit_rvars_list |>
-  purrr::map(\(x) {
-    keep_at(x, stringr::str_subset(names(x), "phi|sigma|alpha"))
-  })
-
-fit_hyperparams <- fit_hyperparams_list |>
-  imap(\(.rvars, .name) {
-    .rvars |>
-      summarise_draws() #|>
-    # mutate(model = .name, .before = 1)
-  }) |>
-  list_rbind(names_to = "model") |>
-  mutate(model = factor(model, levels = fit_names)) |>
-  arrange(model, variable)
-
-### Plot hyperparameter summaries ----
-nb2_hyperparams <- fit_hyperparams |>
-  filter(model == "bivar_negbinom") |>
-  arrange(desc(rhat), ess_bulk)
-nb2_hyperparams
-
-nb2_hyperparams_dup <- nb2_hyperparams |>
-  select(-variable) |>
-  duplicated() |>
-  which() |>
-  map(\(x) nb2_hyperparams |> slice(x)) |>
-  list_rbind()
-nb2_hyperparams_dup
-
 nb2_hyperparams_list <- fit_bivar_negbinom$summary(
   variables = str_subset(
     fit_bivar_negbinom$metadata()$stan_variables,
     "phi|sigma|alpha"
   )
 )
-nb2_hyperparams_list <- fit_hyperparams_list |>
-  pluck("bivar_negbinom")
+
+### Plot hyperparameter summaries ----
 nb2_hyperparams_plots <- nb2_hyperparams_list |>
   names() |>
   set_names() |>
@@ -662,370 +367,6 @@ nb2_hyperparams_plots
 
 
 ## 6.3 Team Strengths ----
-fit_strengths_list <- fit_rvars_list |>
-  purrr::map(\(x) {
-    keep_at(x, stringr::str_subset(names(x), "filtered|predicted"))
-  })
-
-fit_strengths <- fit_strengths_list |>
-  purrr::imap(
-    \(.rvars, .name) {
-      if (stringr::str_detect(.name, "univar")) {
-        .rvars |>
-          spread_rvars(
-            filtered_team_strength[team],
-            filtered_team_hfa[team],
-            filtered_league_hfa[season],
-            predicted_team_strength[team],
-            predicted_team_hfa[team],
-            predicted_league_hfa[season]
-          ) |>
-          dplyr::mutate(
-            model = .name,
-            season = current_season,
-            team = teams[team],
-            .before = 1
-          )
-      } else {
-        .rvars |>
-          spread_rvars(
-            filtered_team_off_strength[team],
-            filtered_team_def_strength[team],
-            filtered_team_hfa[team],
-            filtered_league_hfa[season],
-            predicted_team_off_strength[team],
-            predicted_team_def_strength[team],
-            predicted_team_hfa[team],
-            predicted_league_hfa[season]
-          ) |>
-          dplyr::mutate(
-            filtered_team_strength = filtered_team_off_strength +
-              filtered_team_def_strength,
-            predicted_team_strength = predicted_team_off_strength +
-              predicted_team_def_strength,
-            model = .name,
-            season = current_season,
-            team = teams[team],
-            .before = 1
-          )
-      }
-    }
-  ) |>
-  list_rbind() |>
-  dplyr::mutate(model = factor(model, levels = fit_names)) |>
-  dplyr::select(
-    model,
-    season,
-    team,
-    contains("filtered"),
-    contains("predicted")
-  ) |>
-  dplyr::relocate(
-    "filtered_team_off_strength",
-    "filtered_team_def_strength",
-    .before = filtered_team_strength
-  ) |>
-  dplyr::relocate(
-    "predicted_team_off_strength",
-    "predicted_team_def_strength",
-    .before = predicted_team_strength
-  ) |>
-  dplyr::arrange(team, model)
-
-
-possible_exprs <- c(
-  "last_s",
-  "last_w",
-  "filtered_team_strength[team]",
-  "filtered_team_off_strength[team]",
-  "filtered_team_def_strength[team]",
-  "filtered_team_hfa[team]",
-  "filtered_league_hfa",
-  "filtered_alpha_log",
-  "predicted_team_strength[team]",
-  "predicted_team_off_strength[team]",
-  "predicted_team_def_strength[team]",
-  "predicted_team_hfa[team]",
-  "predicted_league_hfa",
-  "predicted_alpha_log",
-  #"eta_home_away[, 1]",
-  #"eta_home_away[, 2]",
-  "phi_home",
-  "phi_away"
-  #"game_pace"
-)
-
-## Compare Univar vs Bivar ----
-fit_rvars_list2_nb <- fit_rvars_list |>
-  pluck("bivar_negbinom2") |>
-  mutate_variables(
-    filtered_team_strength = filtered_team_off_strength +
-      filtered_team_def_strength,
-    predicted_team_strength = predicted_team_off_strength +
-      predicted_team_def_strength
-  )
-fit_rvars_list <- fit_rvars_list |>
-  list_modify(bivar_negbinom2 = fit_rvars_list2_nb)
-comp_list <- fit_rvars_list |>
-  keep_at(c("univar_normal", "bivar_negbinom2"))
-
-
-comp_fits <- comp_list |>
-  imap(
-    \(.rvars, .name) {
-      rvars_expr <- str_subset(
-        possible_exprs,
-        str_c(names(.rvars), collapse = "|")
-      ) |>
-        rlang::parse_exprs()
-
-      out <- .rvars |>
-        spread_rvars(
-          !!!rvars_expr
-        )
-
-      if (str_detect(.name, "bivar_negbinom2")) {
-        # Global log-scale intercept for expected scoring
-        #alpha_log <- .rvars$alpha_log
-
-        # Neutral-field expected points vs league-average opponent
-        out <- out |>
-          mutate(
-            filtered_off_points_neutral = exp(
-              filtered_alpha_log + filtered_team_off_strength
-            ),
-            filtered_def_points_neutral = exp(
-              filtered_alpha_log - filtered_team_def_strength
-            ),
-            predicted_off_points_neutral = exp(
-              predicted_alpha_log + predicted_team_off_strength
-            ),
-            predicted_def_points_neutral = exp(
-              predicted_alpha_log - predicted_team_def_strength
-            ),
-
-            # Margin (points) comparable to univar_normal
-            filtered_team_strength = filtered_off_points_neutral -
-              filtered_def_points_neutral,
-            predicted_team_strength = predicted_off_points_neutral -
-              predicted_def_points_neutral,
-
-            # Convert HFA rvars from log-rate to point increments (home-only effect)
-            # Neutral baseline: exp(alpha_log); increment: exp(alpha_log + hfa) - exp(alpha_log)
-            filtered_team_hfa = exp(
-              filtered_alpha_log + filtered_team_hfa
-            ) -
-              exp(filtered_alpha_log),
-            predicted_team_hfa = exp(
-              predicted_alpha_log + predicted_team_hfa
-            ) -
-              exp(predicted_alpha_log),
-            filtered_league_hfa = exp(
-              filtered_alpha_log + filtered_league_hfa
-            ) -
-              exp(filtered_alpha_log),
-            predicted_league_hfa = exp(
-              predicted_alpha_log + predicted_league_hfa
-            ) -
-              exp(predicted_alpha_log)
-          )
-      }
-      out
-    }
-  ) |>
-  list_rbind(names_to = "model") |>
-  mutate(
-    team = teams[team],
-    model = factor(model, levels = fit_names)
-  ) |>
-  select(
-    model,
-    team,
-    everything()
-    #-season
-  ) |>
-  arrange(team, model)
-comp_fits <- list(
-  "univar_normal" = comp_list2,
-  "bivar_negbinom2" = comp_fits2
-) |>
-  list_rbind(names_to = "model") |>
-  mutate(
-    #team = teams[team],
-    model = factor(model, levels = fit_names)
-  ) |>
-  select(
-    model,
-    team,
-    everything()
-    #-season
-  ) |>
-  arrange(team, model)
-
-
-nb_new_list <- fit_rvars_list |>
-  pluck("bivar_negbinom2")
-#keep_at(str_extract(pred_exprs, "^\\w+"))
-eta_home_away_draws <- nb_new_list |>
-  pluck("eta_home_away")
-
-
-pred_cols <- c(
-  "alpha_log",
-  "log_phi_home",
-  "log_phi_away",
-  "phi_home",
-  "phi_away",
-  "predicted_team_off_strength",
-  "predicted_team_def_strength",
-  "predicted_team_strength",
-  "predicted_team_hfa",
-  "predicted_league_hfa"
-)
-
-pred_exprs <- c(
-  #"predicted_alpha_log",
-  #"log_phi_home",
-  #"log_phi_away",
-  #"phi_home",
-  #"phi_away",
-  "predicted_team_off_strength[team]",
-  "predicted_team_def_strength[team]",
-  "predicted_team_strength[team]",
-  "predicted_team_hfa[team]",
-  "predicted_league_hfa",
-  "predicted_alpha_log",
-  "phi_home",
-  "phi_away"
-  #"game_pace",
-  #"sigma_game_pace"
-)
-# extract everything before first[
-str_extract(pred_exprs, "^\\w+")
-
-predicted_results_nb2 <- fit_rvars_list |>
-  pluck("bivar_negbinom2") |>
-  # mutate_variables(
-  #   filtered_team_strength = filtered_team_off_strength +
-  #     filtered_team_def_strength,
-  #   predicted_team_strength = predicted_team_off_strength +
-  #     predicted_team_def_strength
-  # ) |>
-  keep_at(str_extract(pred_exprs, "^\\w+")) |>
-  as_draws_df() |>
-  spread_rvars(!!!rlang::parse_exprs(pred_exprs))
-#ungroup() |>
-# filter(season == max(season)) |>
-#   select(-season)
-
-oos_nb2 <- oos_games |>
-  left_join(
-    predicted_results_nb2 |>
-      # filter(season == max(season)) |>
-      select(
-        team,
-        predicted_alpha_log,
-        phi_home,
-        phi_away,
-        home_predicted_team_off_strength = predicted_team_off_strength,
-        home_predicted_team_def_strength = predicted_team_def_strength,
-        home_predicted_team_strength = predicted_team_strength,
-        home_predicted_team_hfa = predicted_team_hfa
-      ),
-    by = c("home_idx" = "team")
-  ) |>
-  left_join(
-    predicted_results_nb2 |>
-      # filter(season == max(season)) |>
-      select(
-        team,
-        away_predicted_team_off_strength = predicted_team_off_strength,
-        away_predicted_team_def_strength = predicted_team_def_strength,
-        away_predicted_team_strength = predicted_team_strength
-      ),
-    by = c("away_idx" = "team")
-  ) |>
-  mutate(
-    eta_home = predicted_alpha_log +
-      home_predicted_team_off_strength -
-      away_predicted_team_def_strength +
-      (hfa * home_predicted_team_hfa / 2),
-    eta_away = predicted_alpha_log +
-      away_predicted_team_off_strength -
-      home_predicted_team_def_strength -
-      (hfa * home_predicted_team_hfa / 2),
-    mu_home = exp(eta_home),
-    mu_away = exp(eta_away),
-    mu_result = mu_home - mu_away,
-    mu_total = mu_home + mu_away
-  )
-
-oos_nb3 <- oos_nb2 |>
-  mutate(
-    y_home = rvar_rng(
-      rnbinom,
-      n = nrow(oos_nb2),
-      mu = mu_home,
-      size = phi_home
-    ),
-    y_away = rvar_rng(
-      rnbinom,
-      n = nrow(oos_nb2),
-      mu = mu_away,
-      size = phi_away
-    ),
-    y_result = y_home - y_away,
-    y_total = y_home + y_away
-  )
-
-oos_mu_draws <- draws_rvars(
-  mu_home = oos_nb3$mu_home,
-  y_home = oos_nb3$mu_away,
-  mu_away = oos_nb3$mu_away,
-  y_away = oos_nb3$y_away,
-  mu_result = oos_nb3$mu_result,
-  y_result = oos_nb3$y_result,
-  mu_total = oos_nb3$mu_total,
-  y_total = oos_nb3$y_total
-) |>
-  spread_draws(
-    mu_home[game_idx],
-    y_home[game_idx],
-    mu_away[game_idx],
-    y_away[game_idx],
-    mu_result[game_idx],
-    y_result[game_idx],
-    mu_total[game_idx],
-    y_total[game_idx]
-  ) |>
-  mutate(
-    game_id = oos_games$game_id[game_idx],
-    .after = game_idx
-  )
-
-oos_mu_draws |>
-  #dplyr::ungroup() |>
-  #dplyr::filter(game_idx == 1) |>
-  ggplot2::ggplot(ggplot2::aes(mu_result, mu_total)) +
-  ggplot2::stat_bin_hex(bins = 20) +
-  facet_wrap(~game_id) +
-  ggplot2::scale_fill_viridis_c(
-    breaks = scales::breaks_pretty(6),
-    labels = scales::label_number()
-  ) +
-  theme_minimal()
-
-oos_mu_draws |>
-  #dplyr::ungroup() |>
-  #dplyr::filter(game_idx == 1) |>
-  ggplot2::ggplot(ggplot2::aes(y_result, y_total)) +
-  ggplot2::stat_bin_hex(bins = 20) +
-  facet_wrap(~game_id) +
-  ggplot2::scale_fill_viridis_c(
-    breaks = scales::breaks_pretty(6),
-    labels = scales::label_number()
-  ) +
-  theme_minimal()
 
 # 8. Probabilistic Predictions ----
 # load nb_rvars
@@ -1049,13 +390,6 @@ system.time(
   nb_sum_github <- arrow::read_feather(nb_sums_github_url)
 )
 
-system.time(
-  nb_sum_github <- arrow::read_feather(nb_sums_github_url)
-)
-
-system.time(
-  nb_sum_github <- arrow::read_feather(nb_sums_github_url)
-)
 
 nb_sum_github2 <- load_from_url(
   nb_sums_github_url
