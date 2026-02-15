@@ -1,0 +1,13 @@
+# Stan models to exclude from install-time compilation.
+# One pattern per line (globs allowed). Lines starting with `#` are comments.
+#
+# Keepers (compiled): 
+#   team_strength_bivar_negbinom.stan, 
+#   team_strength_fit.stan, 
+#   team_strength_gq.stan
+#
+team_strength_bivar_normal.stan
+team_strength_bivar_poisson.stan
+# team_strength_recursive.stan (Enabled for backtesting)
+team_strength_univar_student.stan
+

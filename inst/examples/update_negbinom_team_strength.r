@@ -115,21 +115,21 @@ gq_stan_data <- prepare_gq_data(
 # ============================================================================ #
 
 ## 3.0 previous fitting parameters ----
-historic_hyperparams <- pb_list(
-  repo = github_data_repo,
-  tag = "team_strength_fit_hyperparams"
-) |>
-  pull(file_name) |>
-  str_subset(pattern = paste0("team_strength_fit_hyperparams_[:digit:]")) |>
-  map(\(x) {
-    pb_read(
-      file = x,
-      repo = github_data_repo,
-      tag = "team_strength_fit_hyperparams"
-    )
-  }) |>
-  list_rbind() |>
-  arrange(variable, season)
+# historic_hyperparams <- pb_list(
+#   repo = github_data_repo,
+#   tag = "team_strength_fit_hyperparams"
+# ) |>
+#   pull(file_name) |>
+#   str_subset(pattern = paste0("team_strength_fit_hyperparams_[:digit:]")) |>
+#   map(\(x) {
+#     pb_read(
+#       file = x,
+#       repo = github_data_repo,
+#       tag = "team_strength_fit_hyperparams"
+#     )
+#   }) |>
+#   list_rbind() |>
+#   arrange(variable, season)
 gc()
 
 ## 3.1 Fit Model ----
@@ -161,8 +161,8 @@ fit_bivar_negbinom <- fit_team_strength_model(
   adapt_delta = fit_adapt_delta,
   max_treedepth = fit_max_treedepth
 )
-fit_bivar_negbinom$diagnostic_summary()
-fit_bivar_negbinom$cmdstan_diagnose()
+#fit_bivar_negbinom$diagnostic_summary()
+#fit_bivar_negbinom$cmdstan_diagnose()
 
 fit_bivar_negbinom$save_object(
   file = paste0(
@@ -173,10 +173,10 @@ fit_bivar_negbinom$save_object(
 )
 
 ## 3.3 Loo ----
-fit_loo <- fit_bivar_negbinom$loo()
-fit_loo |> print()
-fit_loo |> loo::loo_compare()
-fit_loo |> loo::loo_model_weights()
+# fit_loo <- fit_bivar_negbinom$loo()
+# fit_loo |> print()
+# fit_loo |> loo::loo_compare()
+# fit_loo |> loo::loo_model_weights()
 
 # ============================================================================ #
 # 4. Generate Quantities ----
@@ -293,6 +293,30 @@ pb_write(
     "team_strength_negbinom_summary",
     "_",
     filter_season,
+    ".rds" # ".rds", ".parquet", ".arrow"
+  ),
+  #write_function = arrow::write_feather,
+  repo = github_data_repo,
+  tag = "team_strength_negbinom_summary"
+)
+pb_write(
+  x = nb_sum,
+  file = paste0(
+    "team_strength_negbinom_summary",
+    "_",
+    filter_season,
+    ".parquet" # ".rds", ".parquet", ".arrow"
+  ),
+  #write_function = arrow::write_feather,
+  repo = github_data_repo,
+  tag = "team_strength_negbinom_summary"
+)
+pb_write(
+  x = nb_sum,
+  file = paste0(
+    "team_strength_negbinom_summary",
+    "_",
+    filter_season,
     ".arrow" # ".rds", ".parquet", ".arrow"
   ),
   write_function = arrow::write_feather,
@@ -335,7 +359,7 @@ dir.create(
 saveRDS(nb_rvars, "artifacts/model-reports/team_strength/nb_rvars.rds")
 
 ## 6.2 Hyperparameters ----
-nb2_hyperparams_list <- fit_bivar_negbinom$summary(
+nb_hyperparams_list <- fit_bivar_negbinom$summary(
   variables = str_subset(
     fit_bivar_negbinom$metadata()$stan_variables,
     "phi|sigma|alpha"
@@ -343,28 +367,30 @@ nb2_hyperparams_list <- fit_bivar_negbinom$summary(
 )
 
 ### Plot hyperparameter summaries ----
-nb2_hyperparams_plots <- nb2_hyperparams_list |>
+nb_hyperparams_plots <- nb_hyperparams_list |>
   names() |>
   set_names() |>
   imap(\(.rvar, .names) {
-    var_len <- nb2_hyperparams_list |> pluck(.rvar) |> length()
+    var_len <- nb_hyperparams_list |>
+      pluck(.rvar) |>
+      #select(.rvar) |>
+      length()
     if (var_len > 1) {
       nvar <- paste0(.rvar, "[", 1:var_len, "]")
       mcmc_combo(
-        nb2_hyperparams_list,
+        nb_hyperparams_list,
         pars = nvar,
         combo = c("hist", "trace")
       )
     } else {
       mcmc_combo(
-        nb2_hyperparams_list,
+        nb_hyperparams_list,
         pars = .rvar,
         combo = c("hist", "trace")
       )
     }
   })
-nb2_hyperparams_plots
-
+nb_hyperparams_plots
 
 ## 6.3 Team Strengths ----
 
@@ -603,7 +629,8 @@ pred_rvars <- oos_games |>
 
 ## 8.1 One Game Test ----
 game_id_sel <- pred_rvars |>
-  filter(home_team == "BAL" | away_team == "BAL") |>
+  slice(1) |>
+  #filter(home_team == "BAL" | away_team == "BAL") |>
   pull(game_id)
 
 # 1) Get rvar row for the game (to use Pr) and the per-draw data (to plot)

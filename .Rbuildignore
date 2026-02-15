@@ -19,3 +19,4 @@
 ^\.Renviron$
 ^\.vscode$
 ^\.idea$
+^inst\examples$

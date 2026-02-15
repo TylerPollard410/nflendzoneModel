@@ -19,9 +19,11 @@ Imports:
     posterior,
     purrr,
     stats,
+    stringr,
     tibble,
     tidybayes,
     tidyr,
+    tools,
     utils
 Suggests:
     ggplot2,

@@ -1,13 +1,7 @@
 // Joint home/away count model (NegBinomial-2 on log scale) with offense/defense latents
-// SPEED/ROBUSTNESS CLEANUP (keeps output size same or smaller):
-//  - Shared per-game pace effect (induces home/away correlation)
-//  - Hierarchical shrinkage for phi_home / phi_away
-//  - Remove redundant outputs / aliases (smaller)
-//  - Avoid recomputing phi expressions inside likelihood (use transformed params)
-//  - Keep heavy objects OUT of transformed parameters outputs (no eta stored there)
+// ROBUST VERSION: Uses Scaling Factors to prevent initialization explosions.
 
 functions {
-  // Return N_games x 2 matrix: log-rate [home, away]
   matrix compute_eta_home_away(array[] int home_team, array[] int away_team,
                                array[] int week_idx, array[] int season_idx,
                                array[] int hfa,
@@ -93,67 +87,93 @@ transformed data {
                                        week_idx, fw_season_idx);
   array[N_weeks] int is_last_week = compute_is_last_week(N_weeks, N_games,
                                       week_idx, lw_season_idx);
+  
+  // SCALING CONSTANTS
+  // We use these to multiply the raw parameters.
+  // Even if raw_sigma is initialized to 5.0, result is 0.5.
+  real SCALE_HFA = 0.1;
+  real SCALE_INIT = 0.1;
+  real SCALE_WEEK = 0.05;
+  real SCALE_SEAS = 0.1;
+  real SCALE_PHI = 0.1;
 }
 parameters {
-  // League & team HFA
+  // --- League HFA ---
   real league_hfa_init;
   vector[N_seasons - 1] z_league_hfa_innovation;
-  real<lower=0> sigma_league_hfa_innovation;
+  real<lower=0> sigma_league_hfa_std; // Init range ~[0.1, 7], Physical ~[0.01, 0.7] due to scale
   real<lower=0, upper=1> phi_league_hfa;
   
   array[N_seasons] sum_to_zero_vector[N_teams] z_team_hfa_deviation;
-  real<lower=0> sigma_team_hfa;
+  real<lower=0> sigma_team_hfa_std;
   
-  // Offense/Defense states
+  // --- Offense/Defense Init ---
   sum_to_zero_vector[N_teams] z_team_off_init;
   sum_to_zero_vector[N_teams] z_team_def_init;
-  real<lower=0> sigma_team_off_init;
-  real<lower=0> sigma_team_def_init;
+  real<lower=0> sigma_team_off_init_std;
+  real<lower=0> sigma_team_def_init_std;
   
+  // --- Weekly Innovations ---
   array[N_weeks - 1] sum_to_zero_vector[N_teams] z_weekly_off_innov;
   array[N_weeks - 1] sum_to_zero_vector[N_teams] z_weekly_def_innov;
-  real<lower=0> sigma_weekly_off_innov;
-  real<lower=0> sigma_weekly_def_innov;
+  real<lower=0> sigma_weekly_off_std;
+  real<lower=0> sigma_weekly_def_std;
   real<lower=0, upper=1> phi_weekly_off;
   real<lower=0, upper=1> phi_weekly_def;
   
+  // --- Season Innovations ---
   array[N_seasons - 1] sum_to_zero_vector[N_teams] z_season_off_innov;
   array[N_seasons - 1] sum_to_zero_vector[N_teams] z_season_def_innov;
-  real<lower=0> sigma_season_off_innov;
-  real<lower=0> sigma_season_def_innov;
+  real<lower=0> sigma_season_off_std;
+  real<lower=0> sigma_season_def_std;
   real<lower=0, upper=1> phi_season_off;
   real<lower=0, upper=1> phi_season_def;
   
-  // Scoring intercept on natural scale -> transformed to log
-  real<lower=5> alpha_score_raw;
+  // --- Scoring Environment ---
+  // Centered parameterization: 22 + 3 * std
+  real alpha_score_std;
   
-  // Season-level scoring environment on log scale (AR(1) deviations)
   real alpha_log_dev_init;
   vector[N_seasons - 1] z_alpha_log_dev_innovation;
-  real<lower=0> sigma_alpha_log_dev_innovation;
+  real<lower=0> sigma_alpha_log_std;
   real<lower=0, upper=1> phi_alpha_log;
   
-  // Shared per-game pace/environment effect (induces home/away correlation)
-  // vector[N_games] z_game_pace;
-  // real<lower=0> sigma_game_pace;
-  
-  // Hierarchical shrinkage for overdispersion (phi)
-  real log_phi_league;
+  // --- Dispersion ---
+  real log_phi_league_std;
   real log_phi_home_raw;
   real log_phi_away_raw;
-  real<lower=0> sigma_log_phi_ha;
+  real<lower=0> sigma_log_phi_std;
 }
 transformed parameters {
+  // 1. Rescale Sigmas to Physical Scale
+  real sigma_league_hfa = sigma_league_hfa_std * SCALE_HFA;
+  real sigma_team_hfa = sigma_team_hfa_std * SCALE_HFA;
+  
+  real sigma_team_off_init = sigma_team_off_init_std * SCALE_INIT;
+  real sigma_team_def_init = sigma_team_def_init_std * SCALE_INIT;
+  
+  real sigma_weekly_off_innov = sigma_weekly_off_std * SCALE_WEEK;
+  real sigma_weekly_def_innov = sigma_weekly_def_std * SCALE_WEEK;
+  
+  real sigma_season_off_innov = sigma_season_off_std * SCALE_SEAS;
+  real sigma_season_def_innov = sigma_season_def_std * SCALE_SEAS;
+  
+  real sigma_alpha_log = sigma_alpha_log_std * SCALE_SEAS;
+  real sigma_log_phi_ha = sigma_log_phi_std * SCALE_PHI;
+  
+  // 2. Build Model Components
   // Derived scoring environment (season-level)
-  real alpha_log_base = log(alpha_score_raw);
+  // Center Alpha around 22 points
+  real alpha_score_raw = 22 + 3 * alpha_score_std;
+  
+  real alpha_log_base = log(fmax(1.0, alpha_score_raw));
   vector[N_seasons] alpha_log_dev;
   vector[N_seasons] alpha_log;
   
   alpha_log_dev[1] = alpha_log_dev_init;
   for (s in 2 : N_seasons) 
     alpha_log_dev[s] = phi_alpha_log * alpha_log_dev[s - 1]
-                       + z_alpha_log_dev_innovation[s - 1]
-                         * sigma_alpha_log_dev_innovation;
+                       + z_alpha_log_dev_innovation[s - 1] * sigma_alpha_log;
   alpha_log = alpha_log_base + alpha_log_dev;
   
   // League HFA
@@ -161,8 +181,7 @@ transformed parameters {
   league_hfa[1] = league_hfa_init;
   for (s in 2 : N_seasons) 
     league_hfa[s] = phi_league_hfa * league_hfa[s - 1]
-                    + z_league_hfa_innovation[s - 1]
-                      * sigma_league_hfa_innovation;
+                    + z_league_hfa_innovation[s - 1] * sigma_league_hfa;
   
   // Team HFA
   array[N_seasons] vector[N_teams] team_hfa;
@@ -199,45 +218,48 @@ transformed parameters {
   for (w in 1 : N_weeks) 
     team_strength[w] = team_off_strength[w] + team_def_strength[w];
   
-  // Shared game pace
-  // vector[N_games] game_pace = z_game_pace * sigma_game_pace;
-  
   // Hierarchical dispersion
-  real<lower=0> phi_home = exp(
-                               log_phi_league
-                               + sigma_log_phi_ha * log_phi_home_raw);
-  real<lower=0> phi_away = exp(
-                               log_phi_league
-                               + sigma_log_phi_ha * log_phi_away_raw);
+  // Centered on log(12) ~ 2.48
+  real log_phi_league = 2.5 + 0.5 * log_phi_league_std;
+  real<lower=0> phi_home = fmax(1e-6,
+                                exp(
+                                    log_phi_league
+                                    + sigma_log_phi_ha * log_phi_home_raw));
+  real<lower=0> phi_away = fmax(1e-6,
+                                exp(
+                                    log_phi_league
+                                    + sigma_log_phi_ha * log_phi_away_raw));
 }
 model {
   // ---------------------------
-  // Priors
+  // Priors on Standardized Parameters
   // ---------------------------
+  // Prior scale is now relative to the hard-coded SCALE constant.
+  // e.g., std ~ N(0, 2) * SCALE(0.1) => physical ~ N(0, 0.2)
   
-  // HFA on log-rate
-  league_hfa_init ~ normal(0, 0.3);
+  // HFA
+  league_hfa_init ~ normal(0, 0.2);
   z_league_hfa_innovation ~ std_normal();
-  sigma_league_hfa_innovation ~ student_t(3, 0, 0.4);
+  sigma_league_hfa_std ~ student_t(3, 0, 1.0); // Resulting scale ~ 0.1
   phi_league_hfa ~ beta(8, 2);
   
   for (s in 1 : N_seasons) 
     z_team_hfa_deviation[s] ~ std_normal();
-  sigma_team_hfa ~ student_t(3, 0, 0.4);
+  sigma_team_hfa_std ~ student_t(3, 0, 1.0); // Resulting scale ~ 0.1
   
   // Off/Def init
   z_team_off_init ~ std_normal();
   z_team_def_init ~ std_normal();
-  sigma_team_off_init ~ student_t(3, 0, 5);
-  sigma_team_def_init ~ student_t(3, 0, 5);
+  sigma_team_off_init_std ~ student_t(3, 0, 2.0); // Resulting scale ~ 0.2
+  sigma_team_def_init_std ~ student_t(3, 0, 2.0);
   
   // Weekly innovations
   for (w in 1 : (N_weeks - 1)) {
     z_weekly_off_innov[w] ~ std_normal();
     z_weekly_def_innov[w] ~ std_normal();
   }
-  sigma_weekly_off_innov ~ student_t(3, 0, 2);
-  sigma_weekly_def_innov ~ student_t(3, 0, 2);
+  sigma_weekly_off_std ~ student_t(3, 0, 1.0); // Resulting scale ~ 0.05
+  sigma_weekly_def_std ~ student_t(3, 0, 1.0);
   phi_weekly_off ~ beta(9, 1);
   phi_weekly_def ~ beta(9, 1);
   
@@ -246,42 +268,33 @@ model {
     z_season_off_innov[s] ~ std_normal();
     z_season_def_innov[s] ~ std_normal();
   }
-  sigma_season_off_innov ~ student_t(3, 0, 5);
-  sigma_season_def_innov ~ student_t(3, 0, 5);
+  sigma_season_off_std ~ student_t(3, 0, 2.0); // Resulting scale ~ 0.2
+  sigma_season_def_std ~ student_t(3, 0, 2.0);
   phi_season_off ~ beta(6, 4);
   phi_season_def ~ beta(6, 4);
   
-  // Intercept (team points)
-  alpha_score_raw ~ normal(21, 5);
+  // Intercept (centered)
+  alpha_score_std ~ std_normal(); // ~ N(22, 3) because of transform
   
-  // Season scoring environment (log scale)
-  alpha_log_dev_init ~ normal(0, 0.2);
+  alpha_log_dev_init ~ normal(0, 0.1);
   z_alpha_log_dev_innovation ~ std_normal();
-  sigma_alpha_log_dev_innovation ~ student_t(3, 0, 0.2);
+  sigma_alpha_log_std ~ student_t(3, 0, 1.0);
   phi_alpha_log ~ beta(8, 2);
   
-  // Shared game pace
-  // z_game_pace ~ std_normal();
-  // sigma_game_pace ~ student_t(3, 0, 0.30);
-  
   // Dispersion shrinkage
-  log_phi_league ~ normal(log(12), 0.8);
+  log_phi_league_std ~ std_normal();
   log_phi_home_raw ~ std_normal();
   log_phi_away_raw ~ std_normal();
-  sigma_log_phi_ha ~ student_t(3, 0, 0.35);
+  sigma_log_phi_std ~ student_t(3, 0, 2.0); // Resulting scale ~ 0.2
   
   // ---------------------------
-  // Likelihood (correlated via shared pace effect)
+  // Likelihood
   // ---------------------------
   {
     matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
                                week_idx, season_idx, hfa, team_off_strength,
                                team_def_strength, team_hfa, alpha_log,
                                N_games);
-    
-    // within-game correlation
-    // eta[ : , 1] += game_pace;
-    // eta[ : , 2] += game_pace;
     
     home_score ~ neg_binomial_2_log(eta[ : , 1], phi_home);
     away_score ~ neg_binomial_2_log(eta[ : , 2], phi_away);
@@ -299,11 +312,6 @@ generated quantities {
   real filtered_league_hfa = league_hfa[last_s];
   real filtered_alpha_log = alpha_log[last_s];
   
-  // Expose scales needed for R-side OOS
-  // real phi_home_out = phi_home;
-  // real phi_away_out = phi_away;
-  // real sigma_game_pace_out = sigma_game_pace;
-  
   // One-step-ahead state draws (for R-side forecasting)
   vector[N_teams] predicted_team_off_strength;
   vector[N_teams] predicted_team_def_strength;
@@ -314,7 +322,6 @@ generated quantities {
   {
     int next_is_first = is_last_week[last_w];
     
-    // sum-to-zero innovations for off/def
     vector[N_teams - 1] off_raw;
     vector[N_teams - 1] def_raw;
     for (t in 1 : (N_teams - 1)) {
@@ -324,6 +331,7 @@ generated quantities {
     vector[N_teams] z0_off = sum_to_zero_constrain(off_raw);
     vector[N_teams] z0_def = sum_to_zero_constrain(def_raw);
     
+    // If NEXT week starts a new season
     if (next_is_first == 1) {
       predicted_team_off_strength = phi_season_off
                                     * team_off_strength[last_w]
@@ -333,14 +341,12 @@ generated quantities {
                                     + z0_def * sigma_season_def_innov;
       
       predicted_league_hfa = phi_league_hfa * league_hfa[last_s]
-                             + normal_rng(0, sigma_league_hfa_innovation);
+                             + normal_rng(0, sigma_league_hfa);
       
-      // Next-season scoring environment (one-step)
       predicted_alpha_log = alpha_log_base
                             + phi_alpha_log * alpha_log_dev[last_s]
-                            + normal_rng(0, sigma_alpha_log_dev_innovation);
+                            + normal_rng(0, sigma_alpha_log);
       
-      // Next-season team HFA deviations (sum-to-zero)
       vector[N_teams - 1] hfa_raw;
       for (t in 1 : (N_teams - 1)) 
         hfa_raw[t] = normal_rng(0, 1);
@@ -360,23 +366,13 @@ generated quantities {
     }
   }
   
-  // In-sample predictors (for log_lik + optional PPC)
-  // matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
-  //                            week_idx, season_idx, hfa, team_off_strength,
-  //                            team_def_strength, team_hfa, alpha_log, N_games);
-  // eta[ : , 1] += game_pace;
-  // eta[ : , 2] += game_pace;
-  
   // Per-game log-lik (sum of two NB2 logs)
   vector[N_games] log_lik;
   {
-    // In-sample predictors (for log_lik + optional PPC)
     matrix[N_games, 2] eta = compute_eta_home_away(home_team, away_team,
                                week_idx, season_idx, hfa, team_off_strength,
                                team_def_strength, team_hfa, alpha_log,
                                N_games);
-    // eta[ : , 1] += game_pace;
-    // eta[ : , 2] += game_pace;
     
     for (g in 1 : N_games) 
       log_lik[g] = neg_binomial_2_log_lpmf(home_score[g] | eta[g, 1],
@@ -384,25 +380,4 @@ generated quantities {
                    + neg_binomial_2_log_lpmf(away_score[g] | eta[g, 2],
                        phi_away);
   }
-  // for (g in 1 : N_games) 
-  //   log_lik[g] = neg_binomial_2_log_lpmf(home_score[g] | eta[g, 1], phi_home)
-  //                + neg_binomial_2_log_lpmf(away_score[g] | eta[g, 2],
-  //                    phi_away);
-  // Optional in-sample posterior predictive draws (same as your previous output family)
-  // array[N_games] int sim_home_score;
-  // array[N_games] int sim_away_score;
-  // array[N_games] int sim_result;
-  // array[N_games] int sim_total;
-  // array[N_games] int sim_home_win;
-  // for (g in 1 : N_games) {
-  //   int y_h = neg_binomial_2_log_rng(eta[g, 1], phi_home);
-  //   int y_a = neg_binomial_2_log_rng(eta[g, 2], phi_away);
-  //   sim_home_score[g] = y_h;
-  //   sim_away_score[g] = y_a;
-  //   sim_result[g] = y_h - y_a;
-  //   sim_total[g] = y_h + y_a;
-  //   sim_home_win[g] = (y_h > y_a);
-  // }
-  // Expose per-game log-rates once (no redundant alias)
-  // matrix[N_games, 2] eta_home_away = eta;
 }

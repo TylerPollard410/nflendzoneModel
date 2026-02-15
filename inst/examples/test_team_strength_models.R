@@ -253,21 +253,26 @@ fit_bivar_negbinom <- fit_team_strength_model(
   max_treedepth = fit_max_treedepth
 )
 
-# mod_nb2 <- cmdstan_model("src/stan/team_strength_bivar_negbinom.stan")
-# fit_bivar_negbinom <- mod_nb2$sample(
-#   data = fit_stan_data,
-#   # model = "team_strength_bivar_negbinom",
-#   seed = fit_seed,
-#   #init = 0,
-#   sig_figs = fit_sig_figs,
-#   chains = fit_chains,
-#   parallel_chains = fit_parallel,
-#   iter_warmup = fit_warm,
-#   iter_sampling = fit_samps,
-#   thin = fit_thin,
-#   adapt_delta = fit_adapt_delta,
-#   max_treedepth = fit_max_treedepth
-# )
+stan_code_nb <- write_stan_file(
+  "
+"
+)
+mod_nb <- cmdstan_model(stan_code_nb)
+#mod_nb <- cmdstan_model("src/stan/team_strength_bivar_negbinom.stan")
+fit_bivar_negbinom_o <- mod_nb$sample(
+  data = fit_stan_data,
+  # model = "team_strength_bivar_negbinom",
+  seed = fit_seed,
+  init = 0.2, # Force robust initialization
+  sig_figs = fit_sig_figs,
+  chains = fit_chains,
+  parallel_chains = fit_parallel,
+  iter_warmup = fit_warm,
+  iter_sampling = fit_samps,
+  thin = fit_thin,
+  adapt_delta = fit_adapt_delta,
+  max_treedepth = fit_max_treedepth
+)
 fit_bivar_negbinom$diagnostic_summary()
 fit_bivar_negbinom$cmdstan_diagnose()
 
@@ -340,6 +345,18 @@ fit_bivar_negbinom$save_object(
 )
 
 ## 3.3 Loo ----
+fit_list <- list(
+  #fit_univar_normal,
+  #fit_univar_student,
+  #fit_bivar_normal,
+  #fit_bivar_poisson,
+  fit_bivar_negbinom,
+  fit_bivar_negbinom_o
+) |>
+  set_names(c(
+    "bivar_negbinom",
+    "bivar_negbinom_o"
+  ))
 fit_loo <- fit_list |>
   #keep_at(c("bivar_negbinom", "bivar_negbinom2")) |>
   map(\(.fit) .fit$loo())
